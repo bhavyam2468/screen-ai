@@ -1,0 +1,143 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300..800;1,300..800&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  background: transparent !important;
+  overflow: hidden;
+}
+
+body {
+  font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  color: #f4f4f6;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+* {
+  font-family: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  outline: none !important;
+}
+
+/* thin scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 99px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+@keyframes shimmer-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes orb-drift {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(14px, -10px) scale(1.12);
+  }
+}
+
+@keyframes cursor-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes spin-slow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.anim-orb {
+  animation: orb-drift 7s ease-in-out infinite;
+}
+
+.stream-cursor::after {
+  content: "▍";
+  margin-left: 2px;
+  color: #ffffff;
+  animation: cursor-blink 0.8s ease-in-out infinite;
+}
+
+/* markdown body */
+.md-body {
+  user-select: text;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: rgba(244, 244, 246, 0.92);
+}
+.md-body p {
+  margin: 0 0 8px;
+}
+.md-body p:last-child {
+  margin-bottom: 0;
+}
+.md-body h1,
+.md-body h2,
+.md-body h3 {
+  font-weight: 600;
+  margin: 10px 0 6px;
+  font-size: 14px;
+}
+.md-body ul,
+.md-body ol {
+  margin: 6px 0 10px;
+  padding-left: 18px;
+}
+.md-body li {
+  margin-bottom: 3px;
+}
+.md-body code {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+.md-body pre {
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.md-body pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+.md-body a {
+  color: #67e8f9;
+}
+.md-body strong {
+  font-weight: 600;
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Screen AI",
+  "version": "0.1.0",
+  "identifier": "com.screenai.overlay",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Screen AI",
+        "width": 1920,
+        "height": 1080,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "resizable": true,
+        "shadow": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage", "deb"],
+    "icon": ["../assets/icon.png"],
+    "category": "Utility",
+    "shortDescription": "AI overlay for your screen",
+    "longDescription": "Summon an AI overlay anywhere, ask about your screen, get a streaming reply bubble."
+  }
+}

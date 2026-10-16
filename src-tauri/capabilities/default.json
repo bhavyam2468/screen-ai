@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Event stream for AI chunks (+ window API). App commands are allowed by default.",
+  "windows": ["main"],
+  "permissions": ["core:event:default", "core:window:default"]
+}
