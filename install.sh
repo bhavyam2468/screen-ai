@@ -391,14 +391,25 @@ bind_niri() {
   local cfg="$HOME/.config/niri/config.kdl" inc="$HOME/.config/niri/screen-ai.kdl"
   [ -f "$cfg" ] || { warn "no niri config found"; return 1; }
   cat >"$inc" <<EOF
-$MARK — managed by the Screen AI installer; removed by the uninstaller
+// screen-ai — managed by the Screen AI installer; removed by the uninstaller
 binds {
     $NIRI_KEY hotkey-overlay-title="Screen AI" { spawn "screen-ai" "--toggle"; }
 }
+
 spawn-at-startup "screen-ai"
+
+window-rule {
+    match app-id=r#"^screen-ai$"#
+    open-floating true
+    draw-border-with-background false
+}
+
+layer-rule {
+    match namespace="^screen-ai$"
+}
 EOF
-  add_line_once "$cfg" "include \"screen-ai.kdl\" $MARK"
-  have niri && niri validate >/dev/null 2>&1 || { warn "niri rejected the config — is your niri older than 25.11 (no 'include')?"; return 1; }
+  add_line_once "$cfg" "include \"screen-ai.kdl\" // screen-ai"
+  have niri && niri validate >/dev/null 2>&1 || { warn "niri rejected the config"; return 1; }
   ok "niri: $NIRI_KEY → screen-ai (hot-reloads automatically)"
 }
 
@@ -406,11 +417,24 @@ bind_hyprland() {
   local cfg="$HOME/.config/hypr/hyprland.conf" inc="$HOME/.config/hypr/screen-ai.conf"
   [ -f "$cfg" ] || { warn "no hyprland.conf found"; return 1; }
   cat >"$inc" <<EOF
-$MARK — managed by the Screen AI installer
+# screen-ai — managed by the Screen AI installer; removed by the uninstaller
+
+# Keybind & autostart
 bind = $HYPR_MODS, $HYPR_KEY, exec, screen-ai --toggle
 exec-once = screen-ai
+
+# Layer rules (for Wayland layer-shell overlay surface)
+layerrule = noanim, screen-ai
+layerrule = blur, screen-ai
+layerrule = ignorealpha 0.5, screen-ai
+
+# Window rules (for fallback / floating window mode)
+windowrulev2 = float, class:^(screen-ai)$
+windowrulev2 = noanim, class:^(screen-ai)$
+windowrulev2 = noborder, class:^(screen-ai)$
+windowrulev2 = noshadow, class:^(screen-ai)$
 EOF
-  add_line_once "$cfg" "source = ~/.config/hypr/screen-ai.conf $MARK"
+  add_line_once "$cfg" "source = ~/.config/hypr/screen-ai.conf # screen-ai"
   have hyprctl && hyprctl reload >/dev/null 2>&1
   ok "hyprland: $HYPR_MODS+$HYPR_KEY → screen-ai"
 }
@@ -419,11 +443,12 @@ bind_sway() {
   local cfg="$HOME/.config/sway/config" inc="$HOME/.config/sway/screen-ai.conf"
   [ -f "$cfg" ] || { warn "no sway config found"; return 1; }
   cat >"$inc" <<EOF
-$MARK — managed by the Screen AI installer
+# screen-ai — managed by the Screen AI installer; removed by the uninstaller
 bindsym $SWAY_KEY exec screen-ai --toggle
 exec screen-ai
+for_window [app_id="screen-ai"] floating enable, border none
 EOF
-  add_line_once "$cfg" "include ~/.config/sway/screen-ai.conf $MARK"
+  add_line_once "$cfg" "include ~/.config/sway/screen-ai.conf # screen-ai"
   have swaymsg && swaymsg reload >/dev/null 2>&1
   ok "sway: $SWAY_KEY → screen-ai"
 }
@@ -436,6 +461,7 @@ bind_i3() {
 # screen-ai BEGIN
 bindsym $SWAY_KEY exec --no-startup-id screen-ai --toggle
 exec --no-startup-id screen-ai
+for_window [class="screen-ai"] floating enable, border none
 # screen-ai END
 EOF
   have i3-msg && i3-msg reload >/dev/null 2>&1
