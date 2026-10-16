@@ -220,6 +220,21 @@ build_pkgs() {
   esac
 }
 
+filter_installed() {
+  local needed=()
+  for p in "$@"; do
+    case "$PM" in
+      pacman) pacman -Q "$p" >/dev/null 2>&1 || needed+=("$p") ;;
+      apt)    dpkg -s "$p" 2>/dev/null | grep -q "Status: install ok installed" || needed+=("$p") ;;
+      dnf|zypper) rpm -q "$p" >/dev/null 2>&1 || needed+=("$p") ;;
+      xbps)   xbps-query -e "$p" >/dev/null 2>&1 || needed+=("$p") ;;
+      apk)    apk info -e "$p" >/dev/null 2>&1 || needed+=("$p") ;;
+      *)      needed+=("$p") ;;
+    esac
+  done
+  echo "${needed[*]:-}"
+}
+
 pm_install() {
   case "$PM" in
     pacman) $SUDO pacman -S --needed --noconfirm "$@" ;;
@@ -234,7 +249,14 @@ pm_install() {
 
 install_deps() {
   local pkgs="$1"
-  [ -z "$PM" ] && { warn "unknown package manager — install these yourself: GTK3, WebKitGTK 4.1, gtk-layer-shell, grim/maim"; return 0; }
+  [ -z "$pkgs" ] && return 0
+  [ -z "$PM" ] && { warn "unknown package manager — install these yourself: $pkgs"; return 0; }
+  if [ -n "$SUDO" ] && [ "$(id -u)" -ne 0 ]; then
+    if ! sudo -n true 2>/dev/null; then
+      printf '  %s!%s administrator password required to install packages:\n' "$AMB" "$RST" >/dev/tty
+      sudo -v </dev/tty || { warn "sudo failed — skipping package installation"; return 1; }
+    fi
+  fi
   if [ -n "$SUDO" ] || [ "$(id -u)" -eq 0 ]; then
     # shellcheck disable=SC2086
     spin "installing packages ($PM): $pkgs" pm_install $pkgs || warn "some packages failed — continuing; the app may be missing libraries"
@@ -283,7 +305,12 @@ get_binary() {
     warn "prebuilt binary unavailable or incompatible with this system — building from source"
   fi
   if [ "$NO_DEPS" -eq 0 ]; then
-    confirm "Install build tools (rust, node, dev headers)?" y && install_deps "$(build_pkgs)"
+    local missing_build; missing_build="$(filter_installed $(build_pkgs))"
+    if [ -n "$missing_build" ]; then
+      confirm "Install missing build tools ($missing_build)?" y && install_deps "$missing_build"
+    else
+      ok "all build tools already satisfied ($PM)"
+    fi
   fi
   spin "building from source (a few minutes)" build_from_source || die "build failed"
   bin_ok "$BIN_DIR/screen-ai" || die "installed binary has unresolved libraries"
@@ -543,9 +570,16 @@ main() {
   [ -n "$PM" ] && ok "packages    $PM" || warn "packages    unknown package manager"
 
   step "Dependencies"
-  if [ "$NO_DEPS" -eq 1 ]; then note "skipped (--no-deps)"
-  elif confirm "Install runtime libraries ($(runtime_pkgs | tr ' ' ','))?" y; then install_deps "$(runtime_pkgs)"
-  else note "skipped"; fi
+  local missing; missing="$(filter_installed $(runtime_pkgs))"
+  if [ -z "$missing" ]; then
+    ok "all runtime dependencies already satisfied ($PM)"
+  elif [ "$NO_DEPS" -eq 1 ]; then
+    note "skipped (--no-deps)"
+  elif confirm "Install missing libraries ($missing)?" y; then
+    install_deps "$missing"
+  else
+    note "skipped"
+  fi
 
   step "Installing Screen AI"
   pkill -x screen-ai 2>/dev/null; sleep 0.3
