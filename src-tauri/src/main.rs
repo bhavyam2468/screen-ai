@@ -29,6 +29,8 @@ pub struct Settings {
     pub bg_opacity: u8,
     #[serde(default = "d_font")]
     pub font_family: String,
+    #[serde(default = "d_theme")]
+    pub theme: String,
 }
 
 fn d_provider() -> String {
@@ -52,6 +54,9 @@ fn d_opacity() -> u8 {
 fn d_font() -> String {
     "libron".into()
 }
+fn d_theme() -> String {
+    "auto".into()
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -64,6 +69,7 @@ impl Default for Settings {
             max_tokens: d_tokens(),
             bg_opacity: d_opacity(),
             font_family: d_font(),
+            theme: d_theme(),
         }
     }
 }
@@ -326,6 +332,22 @@ fn fit_fullscreen(window: &WebviewWindow) {
     let _ = window.set_position(Position::Logical(LogicalPosition { x: mx, y: my }));
 }
 
+/// Plain-window path (GNOME/Mutter, X11, or layer-shell disabled): cover the
+/// current monitor, pin above everything, and fight for focus — Mutter will
+/// not grant it on its own when the summon arrives from another process.
+fn show_fallback(window: &WebviewWindow) {
+    fit_fullscreen(window);
+    // No-op on Wayland, enforced on X11 — harmless to always set.
+    let _ = window.set_always_on_top(true);
+    let _ = window.set_skip_taskbar(true);
+    let _ = window.show();
+    let _ = window.set_focus();
+    if !window.is_focused().unwrap_or(true) {
+        let _ =
+            window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
+}
+
 /// Turn the Wayland toplevel into a full-screen overlay layer surface.
 /// Must run before the window is first realized.
 fn init_layer_shell(app: &AppHandle) {
@@ -383,9 +405,7 @@ fn show_overlay(app: &AppHandle) {
             }
         });
     } else if let Some(w) = app.get_webview_window("main") {
-        fit_fullscreen(&w);
-        let _ = w.show();
-        let _ = w.set_focus();
+        show_fallback(&w);
     }
 }
 
@@ -909,29 +929,44 @@ pub struct UpdateInfo {
     pub has_update: bool,
     pub release_notes: String,
     pub download_url: String,
+    pub checksum_url: String,
     pub published_at: String,
 }
 
-fn parse_version(v: &str) -> Vec<u32> {
-    v.trim_start_matches('v')
-        .trim_start_matches('V')
+fn normalize_version(v: &str) -> String {
+    let core = v
+        .trim()
+        .trim_start_matches(&['v', 'V'][..])
+        .split(&['-', '+'][..])
+        .next()
+        .unwrap_or("0");
+    let mut parts: Vec<String> = core
         .split('.')
-        .filter_map(|part| part.split('-').next().unwrap_or("0").parse().ok())
-        .collect()
+        .take(3)
+        .map(|p| {
+            let digits: String = p.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if digits.is_empty() {
+                "0".to_string()
+            } else {
+                digits
+            }
+        })
+        .collect();
+    while parts.len() < 3 {
+        parts.push("0".to_string());
+    }
+    parts.join(".")
 }
 
 fn is_newer_version(latest: &str, current: &str) -> bool {
-    let l_parts = parse_version(latest);
-    let c_parts = parse_version(current);
-    for (l, c) in l_parts.iter().zip(c_parts.iter()) {
-        if l > c {
-            return true;
-        }
-        if l < c {
-            return false;
-        }
+    match (
+        semver::Version::parse(&normalize_version(latest)),
+        semver::Version::parse(&normalize_version(current)),
+    ) {
+        (Ok(l), Ok(c)) => l > c,
+        // Unparseable tags: any non-empty difference counts as an update.
+        _ => !latest.trim().is_empty() && latest.trim() != current.trim(),
     }
-    l_parts.len() > c_parts.len()
 }
 
 #[tauri::command]
@@ -961,12 +996,14 @@ async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateIn
     let published_at = json["published_at"].as_str().unwrap_or("").to_string();
 
     let mut download_url = String::new();
+    let mut tarball_name = String::new();
     if let Some(assets) = json["assets"].as_array() {
         for asset in assets {
             if let Some(name) = asset["name"].as_str() {
                 if name.ends_with(".tar.gz") {
                     if let Some(dl) = asset["browser_download_url"].as_str() {
                         download_url = dl.to_string();
+                        tarball_name = name.to_string();
                         break;
                     }
                 }
@@ -975,9 +1012,37 @@ async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateIn
     }
 
     if download_url.is_empty() && !tag.is_empty() {
+        tarball_name = "screen-ai-x86_64-linux.tar.gz".to_string();
         download_url = format!(
-            "https://github.com/bhavyam2468/screen-ai/releases/download/{tag}/screen-ai-x86_64-linux.tar.gz"
+            "https://github.com/bhavyam2468/screen-ai/releases/download/{tag}/{tarball_name}"
         );
+    }
+
+    // Checksum sidecar: `<tarball>.sha256`, or a repo-level sums file.
+    let mut checksum_url = String::new();
+    if let Some(assets) = json["assets"].as_array() {
+        let want_sidecar = format!("{tarball_name}.sha256");
+        for asset in assets {
+            let Some(name) = asset["name"].as_str() else {
+                continue;
+            };
+            let lower = name.to_lowercase();
+            let is_sums = name == want_sidecar
+                || lower == "sha256sums"
+                || lower == "sha256sums.txt"
+                || lower == "checksums.txt"
+                || lower == "checksums-sha256.txt";
+            if is_sums {
+                if let Some(dl) = asset["browser_download_url"].as_str() {
+                    checksum_url = dl.to_string();
+                    break;
+                }
+            }
+        }
+    }
+    if checksum_url.is_empty() && !download_url.is_empty() {
+        // Conventional fallback: sidecar published next to the tarball.
+        checksum_url = format!("{download_url}.sha256");
     }
 
     let has_update = is_newer_version(&tag, &current_version);
@@ -988,14 +1053,90 @@ async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateIn
         has_update,
         release_notes,
         download_url,
+        checksum_url,
         published_at,
     })
 }
 
+/// Only GitHub-controlled hosts may serve self-update payloads.
+fn check_update_url(url: &str) -> Result<(), String> {
+    let rest = url
+        .strip_prefix("https://")
+        .ok_or_else(|| "Update URL must use https".to_string())?;
+    let host = rest.split('/').next().unwrap_or("").to_lowercase();
+    let host = host.split('@').next_back().unwrap_or("");
+    let host = host.split(':').next().unwrap_or("");
+    let ok = host == "github.com"
+        || host == "api.github.com"
+        || host == "objects.githubusercontent.com"
+        || host == "release-assets.githubusercontent.com"
+        || host.ends_with(".githubusercontent.com");
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "Refusing to download update from untrusted host '{host}'"
+        ))
+    }
+}
+
+/// Compare downloaded bytes against the release's sha256 sidecar.
+/// A missing/unreadable sidecar warns but allows install (old releases predate
+/// checksums); a present-but-mismatched checksum is a hard failure.
+async fn verify_checksum(
+    client: &reqwest::Client,
+    checksum_url: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    if checksum_url.trim().is_empty() {
+        eprintln!("screen-ai: no checksum published for this release, skipping verification");
+        return Ok(());
+    }
+    let res = client
+        .get(checksum_url)
+        .header("User-Agent", "screen-ai")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch checksum: {e}"))?;
+    if !res.status().is_success() {
+        eprintln!(
+            "screen-ai: checksum sidecar unavailable (HTTP {}), skipping verification",
+            res.status()
+        );
+        return Ok(());
+    }
+    let text = res.text().await.unwrap_or_default();
+    // Formats: "<hex>" or "<hex>  <filename>" (sha256sum style).
+    let expected = text.split_whitespace().next().unwrap_or("").to_lowercase();
+    if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+        eprintln!("screen-ai: checksum sidecar malformed, skipping verification");
+        return Ok(());
+    }
+    let actual = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    };
+    if actual != expected {
+        return Err(
+            "Checksum mismatch — update payload failed its integrity check, refusing to install"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 #[tauri::command]
-async fn install_update(download_url: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
+async fn install_update(
+    download_url: String,
+    checksum_url: String,
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
     if download_url.is_empty() {
         return Err("Download URL is empty".into());
+    }
+    check_update_url(&download_url)?;
+    if !checksum_url.trim().is_empty() {
+        check_update_url(&checksum_url)?;
     }
 
     let current_exe = std::env::current_exe().map_err(|e| format!("Cannot locate current executable: {e}"))?;
@@ -1030,7 +1171,35 @@ async fn install_update(download_url: String, state: tauri::State<'_, AppState>)
     }
 
     let bytes = resp.bytes().await.map_err(|e| format!("Failed to read response: {e}"))?;
-    std::fs::write(&archive_path, bytes).map_err(|e| format!("Failed to save archive: {e}"))?;
+    if bytes.len() > 512 * 1024 * 1024 {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err("Update payload implausibly large, refusing to install".into());
+    }
+    if let Err(e) = verify_checksum(&state.client, &checksum_url, &bytes).await {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err(e);
+    }
+    std::fs::write(&archive_path, &bytes).map_err(|e| format!("Failed to save archive: {e}"))?;
+
+    // Inspect the listing before extracting: refuse anything but the binary.
+    let listing = std::process::Command::new("tar")
+        .args(["-tzf", archive_path.to_str().unwrap_or("")])
+        .output()
+        .map_err(|e| format!("Failed to list update archive: {e}"))?;
+    if !listing.status.success() {
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        return Err("Update archive is not a valid tarball".into());
+    }
+    for entry in String::from_utf8_lossy(&listing.stdout).lines() {
+        let e = entry.trim().trim_start_matches("./");
+        if e.is_empty() || e == "." {
+            continue;
+        }
+        if e != "screen-ai" {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(format!("Update archive contains unexpected file '{e}', refusing to install"));
+        }
+    }
 
     let status = std::process::Command::new("tar")
         .args(["-xzf", archive_path.to_str().unwrap(), "-C", temp_dir.to_str().unwrap()])
@@ -1083,6 +1252,144 @@ fn restart_app() -> Result<(), String> {
         .map_err(|e| format!("Failed to launch updated binary: {e}"))?;
 
     std::process::exit(0);
+}
+
+// ─── System theme (follow the desktop: KDE/Qt, GNOME/GTK) ────────────────────────
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SystemTheme {
+    pub dark: bool,
+    /// Accent/selection color as #rrggbb when the desktop exposes one.
+    pub accent: Option<String>,
+}
+
+fn kdeglobals_path() -> Option<PathBuf> {
+    if let Ok(c) = std::env::var("XDG_CONFIG_HOME") {
+        let p = PathBuf::from(c).join("kdeglobals");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    dirs::home_dir()
+        .map(|h| h.join(".config/kdeglobals"))
+        .filter(|p| p.exists())
+}
+
+/// Minimal INI lookup: value of `key` inside `[section]`.
+fn ini_lookup(path: &PathBuf, section: &str, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut in_section = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') && line.len() >= 2 {
+            in_section = line[1..line.len() - 1].eq_ignore_ascii_case(section);
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim().eq_ignore_ascii_case(key) {
+            return Some(v.trim().to_string());
+        }
+    }
+    None
+}
+
+fn gsetting(schema: &str, key: &str) -> Option<String> {
+    let out = std::process::Command::new("gsettings")
+        .args(["get", schema, key])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn rgb_to_hex(rgb: &str) -> Option<String> {
+    let parts: Vec<u8> = rgb
+        .split(',')
+        .filter_map(|p| p.trim().parse().ok())
+        .collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    Some(format!("#{:02x}{:02x}{:02x}", parts[0], parts[1], parts[2]))
+}
+
+#[tauri::command]
+fn get_system_theme() -> SystemTheme {
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_lowercase();
+    let is_kde = desktop.contains("kde") || desktop.contains("plasma");
+    // Plasma's selection color doubles as an accent even on non-KDE desktops
+    // that theme Qt via kdeglobals (Hyprland + qt6ct, etc.).
+    let kde_accent = kdeglobals_path()
+        .and_then(|p| ini_lookup(&p, "Colors:Selection", "BackgroundNormal"))
+        .as_deref()
+        .and_then(rgb_to_hex);
+
+    // KDE Plasma: ColorScheme name decides light/dark.
+    if is_kde {
+        if let Some(p) = kdeglobals_path() {
+            let scheme = ini_lookup(&p, "General", "ColorScheme").unwrap_or_default();
+            if !scheme.is_empty() {
+                return SystemTheme {
+                    dark: scheme.to_lowercase().contains("dark"),
+                    accent: kde_accent,
+                };
+            }
+        }
+    }
+
+    // GNOME / GTK desktops.
+    if let Some(cs) = gsetting("org.gnome.desktop.interface", "color-scheme") {
+        // 'default' | 'prefer-dark' | 'prefer-light'
+        let accent = gsetting("org.gnome.desktop.interface", "accent-color")
+            .and_then(|a| match a.trim().trim_matches('\'') {
+                "blue" => Some("#3584e4".to_string()),
+                "teal" => Some("#2190a4".to_string()),
+                "green" => Some("#3a944a".to_string()),
+                "yellow" => Some("#c88800".to_string()),
+                "orange" => Some("#ed5b00".to_string()),
+                "red" => Some("#e62d42".to_string()),
+                "pink" => Some("#d56199".to_string()),
+                "purple" => Some("#9141ac".to_string()),
+                "slate" => Some("#6f8396".to_string()),
+                _ => None,
+            })
+            .or(kde_accent.clone());
+        return SystemTheme {
+            dark: cs.contains("dark"),
+            accent,
+        };
+    }
+    if let Some(gtk_theme) = gsetting("org.gnome.desktop.interface", "gtk-theme") {
+        if !gtk_theme.is_empty() {
+            return SystemTheme {
+                dark: gtk_theme.to_lowercase().contains("dark"),
+                accent: kde_accent.clone(),
+            };
+        }
+    }
+
+    // Last resorts: GTK_THEME override, then assume dark (the native look).
+    if let Ok(t) = std::env::var("GTK_THEME") {
+        if !t.is_empty() {
+            return SystemTheme {
+                dark: t.to_lowercase().contains("dark"),
+                accent: kde_accent.clone(),
+            };
+        }
+    }
+    SystemTheme {
+        dark: true,
+        accent: kde_accent,
+    }
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -1216,7 +1523,8 @@ fn main() {
             overlay_hidden,
             check_for_updates,
             install_update,
-            restart_app
+            restart_app,
+            get_system_theme
         ])
         .run(tauri::generate_context!())
         .expect("error while running screen-ai");

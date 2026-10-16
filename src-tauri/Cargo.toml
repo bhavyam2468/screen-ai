@@ -21,6 +21,11 @@ base64 = "0.22"
 image = "0.25"
 xcap = "0.4"
 dirs = "5"
+semver = "1"
+sha2 = "0.10"
+# NOTE: gtk/gdk/cairo/gtk-layer-shell MUST stay on 0.18 — the same major wry/tao
+# link (Cargo.lock pins a single gtk 0.18.x). A second GTK major = subtle breakage.
+# After any `cargo update`, confirm with: cargo tree -i gtk
 gtk = "0.18"
 gdk = "0.18"
 cairo-rs = "0.18"

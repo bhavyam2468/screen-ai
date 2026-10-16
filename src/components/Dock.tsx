@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowUp, Settings2, Loader2 } from "lucide-react";
 import ChatPanel, { Msg } from "./ChatPanel";
@@ -15,6 +15,7 @@ interface Props {
   streaming: boolean;
   error: string | null;
   thumb: string | null;
+  dark: boolean;
   settings: Settings;
   hasUpdate?: boolean;
   onSubmit: (prompt: string) => void;
@@ -26,7 +27,7 @@ interface Props {
 }
 
 /** Animates its height to follow its content, so panels slide open/closed. */
-function Reveal({ children }: { children: React.ReactNode }) {
+function Reveal({ children, instant }: { children: React.ReactNode; instant: boolean }) {
   const inner = useRef<HTMLDivElement>(null);
   const [h, setH] = useState(0);
   useLayoutEffect(() => {
@@ -42,7 +43,7 @@ function Reveal({ children }: { children: React.ReactNode }) {
       initial={{ height: 0, opacity: 0 }}
       animate={{ height: h, opacity: 1 }}
       exit={{ height: 0, opacity: 0 }}
-      transition={{ duration: 0.34, ease: EASE }}
+      transition={{ duration: instant ? 0 : 0.34, ease: EASE }}
       className="overflow-hidden"
     >
       <div ref={inner}>{children}</div>
@@ -55,6 +56,12 @@ export default function Dock(p: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const opacity = (p.settings.bg_opacity ?? 100) / 100;
+  const reduced = useMemo(
+    () =>
+      typeof window !== "undefined" &&
+      !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
+    []
+  );
 
   // Keep the compositor's input region glued to the card: everything outside
   // it passes clicks through to the apps underneath.
@@ -118,22 +125,30 @@ export default function Dock(p: Props) {
   return (
     <motion.div
       ref={cardRef}
-      initial={{ opacity: 0, y: 28 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: 28 }}
-      transition={{ duration: 0.3, ease: EASE }}
+      initial={{ opacity: 0, y: 26, scale: 0.96, filter: "blur(6px)" }}
+      animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+      exit={{
+        opacity: 0,
+        y: 18,
+        scale: 0.97,
+        filter: "blur(4px)",
+        transition: { duration: reduced ? 0 : 0.18, ease: EASE },
+      }}
+      transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 380, damping: 32 }}
       onAnimationComplete={() => pushRegion.current()}
-      style={{ backgroundColor: `rgba(0,0,0,${opacity})` }}
-      className="pointer-events-auto w-[540px] max-w-[calc(100vw-24px)] rounded-xl border border-white/15 shadow-2xl overflow-hidden"
+      style={{ backgroundColor: `rgba(${p.dark ? "0,0,0" : "255,255,255"},${opacity})` }}
+      className="dock-card pointer-events-auto w-[540px] max-w-[calc(100vw-24px)] rounded-xl border border-white/15 shadow-2xl overflow-hidden"
     >
       <AnimatePresence initial={false}>
       {open && (
-        <Reveal key="panel">
+        <Reveal key="panel" instant={reduced}>
+          <AnimatePresence mode="wait" initial={false}>
           <motion.div
             key={p.panel}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.22 }}
+            initial={reduced ? false : { opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduced ? { opacity: 0 } : { opacity: 0, y: -8 }}
+            transition={{ duration: reduced ? 0 : 0.18, ease: EASE }}
           >
             {p.panel === "settings" ? (
               <SettingsPanel settings={p.settings} onSave={p.onSaveSettings} onClose={p.onCloseSettings} />
@@ -147,19 +162,29 @@ export default function Dock(p: Props) {
                 onRetry={p.onRetry}
               />
             )}
-          </motion.div>
+            </motion.div>
+          </AnimatePresence>
         </Reveal>
       )}
       </AnimatePresence>
 
       <div
-        className={`flex items-center gap-2.5 px-3 py-2 transition-[border-color] duration-300 border-t ${
+        className={`dock-inputbar flex items-center gap-2.5 px-3 py-2 transition-[border-color] duration-300 border-t ${
           open ? "border-white/10" : "border-transparent"
         }`}
       >
         <div className="shrink-0 w-7 h-7 rounded-lg overflow-hidden bg-neutral-900 border border-white/30 flex items-center justify-center">
           {p.thumb ? (
-            <img src={p.thumb} alt="" className="w-full h-full object-cover" draggable={false} />
+            <motion.img
+              key="thumb"
+              src={p.thumb}
+              alt=""
+              draggable={false}
+              initial={reduced ? false : { scale: 0.5, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ type: "spring", stiffness: 500, damping: 28 }}
+              className="w-full h-full object-cover"
+            />
           ) : (
             <Loader2 size={13} className="text-white/50 animate-spin" />
           )}
@@ -189,13 +214,14 @@ export default function Dock(p: Props) {
           )}
         </button>
 
-        <button
+        <motion.button
           onClick={submit}
           disabled={!canSend}
+          whileTap={reduced ? undefined : { scale: 0.8 }}
           className="p-1 rounded-md text-white/40 hover:text-white disabled:opacity-25 disabled:hover:text-white/40 transition-colors duration-150"
         >
           <ArrowUp size={16} strokeWidth={2.4} />
-        </button>
+        </motion.button>
       </div>
     </motion.div>
   );

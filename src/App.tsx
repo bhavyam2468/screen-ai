@@ -13,6 +13,8 @@ import {
   overlayHidden,
   saveSettings,
   checkForUpdates,
+  getSystemTheme,
+  SystemTheme,
 } from "./lib/store";
 
 // Some "free" router models are safety classifiers and only ever say this.
@@ -27,8 +29,10 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasUpdate, setHasUpdate] = useState(false);
+  const [sysTheme, setSysTheme] = useState<SystemTheme>({ dark: true, accent: null });
 
   useEffect(() => {
+    getSystemTheme().then(setSysTheme).catch(() => {});
     checkForUpdates()
       .then((res) => {
         if (res.has_update) setHasUpdate(true);
@@ -49,6 +53,7 @@ export default function App() {
 
   const summon = useCallback((p: { thumb?: string; view?: string }) => {
     getSettings().then(setSettings);
+    getSystemTheme().then(setSysTheme).catch(() => {});
     setThumb(p.thumb || null);
     update(() => []);
     setError(null);
@@ -175,6 +180,13 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [panel]);
 
+  const dark = settings.theme === "dark" || (settings.theme !== "light" && sysTheme.dark);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    document.documentElement.style.setProperty("--accent", sysTheme.accent || (dark ? "#ffffff" : "#17171c"));
+  }, [dark, sysTheme.accent]);
+
   const align =
     settings.position === "bottom-left"
       ? "items-start pl-6"
@@ -200,6 +212,7 @@ export default function App() {
             streaming={streaming}
             error={error}
             thumb={thumb}
+            dark={dark}
             settings={settings}
             hasUpdate={hasUpdate}
             onSubmit={(p) => submit(p)}

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type ReplyPosition = "bottom-right" | "bottom-left" | "bottom-center";
 export type FontFamily = "libron" | "jetbrains-mono" | "system";
+export type ThemeMode = "auto" | "dark" | "light";
 
 export interface Settings {
   provider: string;
@@ -12,6 +13,7 @@ export interface Settings {
   max_tokens: number;
   bg_opacity: number;
   font_family: FontFamily;
+  theme: ThemeMode;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -23,6 +25,7 @@ export const DEFAULT_SETTINGS: Settings = {
   max_tokens: 800,
   bg_opacity: 100,
   font_family: "libron",
+  theme: "auto",
 };
 
 export interface ProviderPreset {
@@ -170,6 +173,7 @@ export interface UpdateInfo {
   has_update: boolean;
   release_notes: string;
   download_url: string;
+  checksum_url: string;
   published_at: string;
 }
 
@@ -181,15 +185,16 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
       has_update: false,
       release_notes: "",
       download_url: "",
+      checksum_url: "",
       published_at: "",
     };
   }
   return await invoke<UpdateInfo>("check_for_updates");
 }
 
-export async function installUpdate(downloadUrl: string): Promise<string> {
+export async function installUpdate(downloadUrl: string, checksumUrl: string): Promise<string> {
   if (!inTauri) return "Mock update installed";
-  return await invoke<string>("install_update", { downloadUrl });
+  return await invoke<string>("install_update", { downloadUrl, checksumUrl });
 }
 
 export async function restartApp(): Promise<void> {
@@ -197,4 +202,16 @@ export async function restartApp(): Promise<void> {
   await invoke("restart_app");
 }
 
+export interface SystemTheme {
+  dark: boolean;
+  accent: string | null;
+}
 
+export async function getSystemTheme(): Promise<SystemTheme> {
+  if (!inTauri) return { dark: true, accent: null };
+  try {
+    return await invoke<SystemTheme>("get_system_theme");
+  } catch {
+    return { dark: true, accent: null };
+  }
+}

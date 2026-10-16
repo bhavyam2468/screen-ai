@@ -11,12 +11,16 @@ import {
   RefreshCw,
   Search,
   Download,
+  Moon,
+  Sun,
+  SunMoon,
 } from "lucide-react";
 import {
   Settings,
   PROVIDERS,
   ReplyPosition,
   FontFamily,
+  ThemeMode,
   quitApp,
   fetchModels,
   checkForUpdates,
@@ -41,6 +45,12 @@ const FONTS: { id: FontFamily; label: string; sub: string }[] = [
   { id: "libron", label: "Libron", sub: "Editorial Serif" },
   { id: "jetbrains-mono", label: "JetBrains", sub: "Technical Mono" },
   { id: "system", label: "System", sub: "Modern Sans" },
+];
+
+const THEMES: { id: ThemeMode; icon: typeof Moon; label: string }[] = [
+  { id: "auto", icon: SunMoon, label: "Auto" },
+  { id: "dark", icon: Moon, label: "Dark" },
+  { id: "light", icon: Sun, label: "Light" },
 ];
 
 // Safety classifiers (Llama Guard & co) answer "safe"/"unsafe" instead of chatting.
@@ -86,7 +96,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
     setUpdating(true);
     setUpdateError(null);
     try {
-      await installUpdate(updateInfo.download_url);
+      await installUpdate(updateInfo.download_url, updateInfo.checksum_url ?? "");
       setUpdateSuccess(true);
     } catch (err) {
       setUpdateError(String(err));
@@ -312,6 +322,26 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
               >
                 <span className="text-[11.5px] font-medium leading-none">{label}</span>
                 <span className="text-[9.5px] opacity-70 leading-tight truncate">{sub}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className={LABEL}>Theme</p>
+          <div className="grid grid-cols-3 gap-2">
+            {THEMES.map(({ id, icon: Icon, label }) => (
+              <button
+                key={id}
+                onClick={() => setDraft({ ...draft, theme: id })}
+                className={`py-2 rounded-lg border flex flex-col items-center justify-center gap-1 transition-colors ${
+                  (draft.theme ?? "auto") === id
+                    ? "bg-white text-black font-semibold border-white"
+                    : "bg-neutral-900 border-white/10 text-white/40 hover:text-white hover:bg-neutral-800"
+                }`}
+              >
+                <Icon size={16} />
+                <span className="text-[10.5px]">{label}</span>
               </button>
             ))}
           </div>

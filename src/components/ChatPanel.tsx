@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { X, Copy, Check, RotateCcw } from "lucide-react";
+import { X, Copy, Check, RotateCcw, ArrowDown } from "lucide-react";
 
 export interface Msg {
   role: "user" | "assistant";
@@ -90,14 +91,64 @@ const MD_COMPONENTS: any = {
   ),
 };
 
+function MsgIn({
+  className,
+  reduced,
+  children,
+}: {
+  className?: string;
+  reduced: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <motion.div
+      className={className}
+      initial={reduced ? false : { opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ type: "spring", stiffness: 420, damping: 34 }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
 export default function ChatPanel({ messages, streaming, error, model, onClose, onRetry }: Props) {
   const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const pinnedRef = useRef(true);
+  const [canUp, setCanUp] = useState(false);
+  const [canDown, setCanDown] = useState(false);
+  const reduced = useMemo(
+    () =>
+      typeof window !== "undefined" &&
+      !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
+    []
+  );
 
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedRef.current = gap < 48;
+    setCanUp(el.scrollTop > 24);
+    setCanDown(gap > 24);
+  };
+
+  // Follow the stream only while pinned to the bottom — never yank the user.
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (pinnedRef.current) el.scrollTop = el.scrollHeight;
+    onScroll();
   }, [messages, error]);
+
+  const jumpToLatest = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedRef.current = true;
+    el.scrollTo({ top: el.scrollHeight, behavior: reduced ? "auto" : "smooth" });
+    setCanDown(false);
+  };
 
   const last = [...messages].reverse().find((m) => m.role === "assistant" && m.text);
 
@@ -145,19 +196,21 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
         </button>
       </div>
 
+      <div className="relative">
       <div
         ref={scrollRef}
-        className="px-3.5 pb-3 overflow-y-auto space-y-3 max-h-[min(520px,calc(100vh-160px))]"
+        onScroll={onScroll}
+        className={`chat-scroll px-3.5 pb-3 overflow-y-auto space-y-3 max-h-[min(520px,calc(100vh-160px))]${canUp ? " mask-top" : ""}${canDown ? " mask-bottom" : ""}`}
       >
         {messages.map((m, i) => {
           const isLast = i === messages.length - 1;
           if (m.role === "user") {
             return (
-              <div key={i} className="flex justify-end">
+              <MsgIn key={i} className="flex justify-end" reduced={reduced}>
                 <div className="max-w-[85%] rounded-xl bg-neutral-900 border border-white/10 px-3 py-1.5 text-[13px] text-white/90 select-text break-words">
                   {m.text}
                 </div>
-              </div>
+              </MsgIn>
             );
           }
           if (!m.text) {
@@ -169,28 +222,39 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
               );
             }
             return (
-              <div key={i} className="space-y-2 py-1">
+              <MsgIn key={i} className="space-y-2 py-1" reduced={reduced}>
                 {[88, 70, 52].map((w, k) => (
-                  <div
-                    key={k}
-                    className="h-[9px] rounded bg-white/10 animate-pulse"
-                    style={{ width: `${w}%` }}
-                  />
+                  <div key={k} className="skeleton" style={{ width: `${w}%` }} />
                 ))}
-              </div>
+              </MsgIn>
             );
           }
           return (
-            <div key={i} className={isLast && streaming ? "stream-cursor" : ""}>
+            <MsgIn key={i} className={isLast && streaming ? "stream-cursor" : ""} reduced={reduced}>
               <ReactMarkdown remarkPlugins={[remarkGfm]} className="md-body" components={MD_COMPONENTS}>
                 {m.text}
               </ReactMarkdown>
               {isLast && error && (
                 <p className="mt-2 text-[12.5px] text-rose-300/90 select-text">{error}</p>
               )}
-            </div>
+            </MsgIn>
           );
         })}
+      </div>
+      <AnimatePresence>
+        {canDown && (
+          <motion.button
+            onClick={jumpToLatest}
+            initial={{ opacity: 0, y: 8, x: "-50%" }}
+            animate={{ opacity: 1, y: 0, x: "-50%" }}
+            exit={{ opacity: 0, y: 8, x: "-50%" }}
+            transition={{ duration: reduced ? 0 : 0.18 }}
+            className="absolute bottom-2 left-1/2 w-7 h-7 rounded-full bg-neutral-900 border border-white/15 text-white/70 hover:text-white shadow-lg flex items-center justify-center"
+          >
+            <ArrowDown size={13} />
+          </motion.button>
+        )}
+      </AnimatePresence>
       </div>
     </div>
   );

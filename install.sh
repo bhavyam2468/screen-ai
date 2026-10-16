@@ -277,7 +277,20 @@ download_release() {
   have curl || return 1
   local url="https://github.com/$REPO/releases/latest/download/screen-ai-x86_64-linux.tar.gz" tmp
   tmp="$(mktemp -d)"
-  curl -fsSL "$url" -o "$tmp/sa.tgz" && tar -xzf "$tmp/sa.tgz" -C "$tmp" && [ -f "$tmp/screen-ai" ] || { rm -rf "$tmp"; return 1; }
+  curl -fsSL "$url" -o "$tmp/sa.tgz" || { rm -rf "$tmp"; return 1; }
+  # Integrity: verify the sha256 sidecar when the release publishes one.
+  # (Warn-only — old releases predate checksums.)
+  if curl -fsSL "$url.sha256" -o "$tmp/sa.tgz.sha256" 2>/dev/null; then
+    want="$(cut -d' ' -f1 "$tmp/sa.tgz.sha256" | tr 'A-Z' 'a-z')"
+    got="$(sha256sum "$tmp/sa.tgz" | cut -d' ' -f1)"
+    if [ -z "$want" ] || [ "$want" != "$got" ]; then
+      echo "checksum mismatch for prebuilt binary, trying source build instead" >&2
+      rm -rf "$tmp"; return 1
+    fi
+  fi
+  # Refuse tarballs containing anything but the binary.
+  tar -tzf "$tmp/sa.tgz" | grep -qx "screen-ai" || { rm -rf "$tmp"; return 1; }
+  tar -xzf "$tmp/sa.tgz" -C "$tmp" && [ -f "$tmp/screen-ai" ] || { rm -rf "$tmp"; return 1; }
   mkdir -p "$BIN_DIR" && install -m755 "$tmp/screen-ai" "$BIN_DIR/screen-ai.new" && mv -f "$BIN_DIR/screen-ai.new" "$BIN_DIR/screen-ai"
   rm -rf "$tmp"
 }
