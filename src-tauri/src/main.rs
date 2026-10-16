@@ -27,6 +27,8 @@ pub struct Settings {
     pub max_tokens: u32,
     #[serde(default = "d_opacity")]
     pub bg_opacity: u8,
+    #[serde(default = "d_font")]
+    pub font_family: String,
 }
 
 fn d_provider() -> String {
@@ -47,6 +49,9 @@ fn d_tokens() -> u32 {
 fn d_opacity() -> u8 {
     100
 }
+fn d_font() -> String {
+    "libron".into()
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -58,6 +63,7 @@ impl Default for Settings {
             position: d_pos(),
             max_tokens: d_tokens(),
             bg_opacity: d_opacity(),
+            font_family: d_font(),
         }
     }
 }

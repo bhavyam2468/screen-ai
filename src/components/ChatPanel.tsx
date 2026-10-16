@@ -18,35 +18,76 @@ interface Props {
 }
 
 const MD_COMPONENTS: any = {
+  h1: ({ node, ...p }: any) => (
+    <h1 className="text-[18px] font-bold text-white tracking-tight mt-4 mb-2 pb-1.5 border-b border-white/10" {...p} />
+  ),
+  h2: ({ node, ...p }: any) => (
+    <h2 className="text-[16px] font-bold text-white tracking-tight mt-3.5 mb-1.5" {...p} />
+  ),
+  h3: ({ node, ...p }: any) => (
+    <h3 className="text-[14.5px] font-bold text-white tracking-tight mt-3 mb-1" {...p} />
+  ),
+  h4: ({ node, ...p }: any) => (
+    <h4 className="text-[13.5px] font-bold text-white/95 mt-2 mb-1" {...p} />
+  ),
+  h5: ({ node, ...p }: any) => (
+    <h5 className="text-[13px] font-bold text-white/90 mt-2 mb-1" {...p} />
+  ),
+  h6: ({ node, ...p }: any) => (
+    <h6 className="text-[12.5px] font-bold text-white/85 mt-2 mb-1 uppercase tracking-wider" {...p} />
+  ),
+  strong: ({ node, ...p }: any) => (
+    <strong className="font-bold text-white" {...p} />
+  ),
+  b: ({ node, ...p }: any) => (
+    <b className="font-bold text-white" {...p} />
+  ),
+  em: ({ node, ...p }: any) => (
+    <em className="italic text-white/95" {...p} />
+  ),
+  i: ({ node, ...p }: any) => (
+    <i className="italic text-white/95" {...p} />
+  ),
+  p: ({ node, ...p }: any) => (
+    <p className="my-2 leading-[1.7] text-white/90 first:mt-0 last:mb-0" {...p} />
+  ),
+  hr: ({ node, ...p }: any) => (
+    <hr className="my-3 border-white/10" {...p} />
+  ),
+  li: ({ node, ...p }: any) => (
+    <li className="my-0.5 text-white/90 leading-relaxed" {...p} />
+  ),
   table: ({ node, ...p }: any) => (
     <div className="my-2.5 overflow-x-auto rounded-lg border border-white/15">
-      <table className="w-full text-[12px] border-collapse" {...p} />
+      <table className="w-full text-[12.5px] border-collapse font-sans" {...p} />
     </div>
   ),
   thead: ({ node, ...p }: any) => (
-    <thead className="bg-neutral-900 text-white/90" {...p} />
+    <thead className="bg-neutral-900 text-white font-semibold" {...p} />
   ),
   th: ({ node, ...p }: any) => (
-    <th className="px-3 py-1.5 text-left font-semibold border-b border-r border-white/15 last:border-r-0" {...p} />
+    <th className="px-3 py-1.5 text-left font-bold border-b border-r border-white/15 last:border-r-0" {...p} />
   ),
   td: ({ node, ...p }: any) => (
     <td className="px-3 py-1.5 border-t border-r border-white/10 last:border-r-0 text-white/80" {...p} />
   ),
   pre: ({ node, ...p }: any) => (
-    <pre className="my-2 p-3 rounded-lg bg-neutral-950 border border-white/15 overflow-x-auto text-[12px] leading-relaxed text-white/90" {...p} />
+    <pre className="my-2 p-3 rounded-lg bg-neutral-950 border border-white/15 overflow-x-auto text-[12px] leading-relaxed text-white/90 font-mono" {...p} />
   ),
   code: ({ node, inline, className, ...p }: any) =>
     inline ? (
-      <code className="px-1.5 py-0.5 rounded bg-neutral-900 border border-white/15 text-[11.5px] text-white/90" {...p} />
+      <code className="px-1.5 py-0.5 rounded bg-neutral-900 border border-white/15 text-[11.5px] text-white/95 font-mono" {...p} />
     ) : (
-      <code className={className} {...p} />
+      <code className={`font-mono ${className ?? ""}`} {...p} />
     ),
-  ul: ({ node, ...p }: any) => <ul className="list-disc pl-4 space-y-1 my-1.5" {...p} />,
-  ol: ({ node, ...p }: any) => <ol className="list-decimal pl-4 space-y-1 my-1.5" {...p} />,
+  ul: ({ node, ...p }: any) => <ul className="list-disc pl-5 space-y-1 my-2" {...p} />,
+  ol: ({ node, ...p }: any) => <ol className="list-decimal pl-5 space-y-1 my-2" {...p} />,
   blockquote: ({ node, ...p }: any) => (
-    <blockquote className="border-l-2 border-white/40 pl-3 my-2 text-white/70 italic" {...p} />
+    <blockquote className="border-l-2 border-white/40 pl-3 my-2 text-white/75 italic" {...p} />
   ),
-  a: ({ node, ...p }: any) => <a className="underline underline-offset-2" {...p} />,
+  a: ({ node, ...p }: any) => (
+    <a className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 transition-colors" target="_blank" rel="noreferrer" {...p} />
+  ),
 };
 
 export default function ChatPanel({ messages, streaming, error, model, onClose, onRetry }: Props) {

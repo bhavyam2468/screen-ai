@@ -11,7 +11,7 @@ import {
   RefreshCw,
   Search,
 } from "lucide-react";
-import { Settings, PROVIDERS, ReplyPosition, quitApp, fetchModels } from "../lib/store";
+import { Settings, PROVIDERS, ReplyPosition, FontFamily, quitApp, fetchModels } from "../lib/store";
 
 interface Props {
   settings: Settings;
@@ -23,6 +23,12 @@ const POSITIONS: { id: ReplyPosition; icon: typeof AlignStartVertical; label: st
   { id: "bottom-left", icon: AlignStartVertical, label: "Left" },
   { id: "bottom-center", icon: AlignCenterVertical, label: "Center" },
   { id: "bottom-right", icon: AlignEndVertical, label: "Right" },
+];
+
+const FONTS: { id: FontFamily; label: string; sub: string }[] = [
+  { id: "libron", label: "Libron", sub: "Editorial Serif" },
+  { id: "jetbrains-mono", label: "JetBrains", sub: "Technical Mono" },
+  { id: "system", label: "System", sub: "Modern Sans" },
 ];
 
 // Safety classifiers (Llama Guard & co) answer "safe"/"unsafe" instead of chatting.
@@ -229,6 +235,26 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
               >
                 <Icon size={16} />
                 <span className="text-[10.5px]">{label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className={LABEL}>Typography</p>
+          <div className="grid grid-cols-3 gap-2">
+            {FONTS.map(({ id, label, sub }) => (
+              <button
+                key={id}
+                onClick={() => setDraft({ ...draft, font_family: id })}
+                className={`py-2 px-1 rounded-lg border flex flex-col items-center justify-center gap-0.5 transition-colors ${
+                  (draft.font_family ?? "libron") === id
+                    ? "bg-white text-black font-semibold border-white"
+                    : "bg-neutral-900 border-white/10 text-white/40 hover:text-white hover:bg-neutral-800"
+                }`}
+              >
+                <span className="text-[11.5px] font-medium leading-none">{label}</span>
+                <span className="text-[9.5px] opacity-70 leading-tight truncate">{sub}</span>
               </button>
             ))}
           </div>

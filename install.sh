@@ -372,7 +372,8 @@ setup_provider() {
   "model": "$(json_escape "$MODEL")",
   "position": "$POSITION",
   "max_tokens": 800,
-  "bg_opacity": $OPACITY
+  "bg_opacity": $OPACITY,
+  "font_family": "libron"
 }
 EOF
   chmod 600 "$CFG_DIR/settings.json"

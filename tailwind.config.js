@@ -4,7 +4,9 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Outfit", "Inter", "system-ui", "sans-serif"],
+        serif: ["Libron", "Newsreader", "Charter", "Georgia", "serif"],
+        sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
+        mono: ["JetBrainsMono Nerd Font", "JetBrains Mono", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       colors: {
         void: "#08080d",

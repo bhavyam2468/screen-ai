@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type ReplyPosition = "bottom-right" | "bottom-left" | "bottom-center";
+export type FontFamily = "libron" | "jetbrains-mono" | "system";
 
 export interface Settings {
   provider: string;
@@ -10,6 +11,7 @@ export interface Settings {
   position: ReplyPosition;
   max_tokens: number;
   bg_opacity: number;
+  font_family: FontFamily;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -20,6 +22,7 @@ export const DEFAULT_SETTINGS: Settings = {
   position: "bottom-right",
   max_tokens: 800,
   bg_opacity: 100,
+  font_family: "libron",
 };
 
 export interface ProviderPreset {

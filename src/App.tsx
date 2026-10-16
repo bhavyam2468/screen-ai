@@ -172,8 +172,15 @@ export default function App() {
       ? "items-end pr-6"
       : "items-center";
 
+  const fontClass =
+    settings.font_family === "jetbrains-mono"
+      ? "font-mono"
+      : settings.font_family === "system"
+      ? "font-sans"
+      : "font-serif";
+
   return (
-    <div className={`fixed inset-0 flex flex-col justify-end pb-6 pointer-events-none ${align}`}>
+    <div className={`fixed inset-0 flex flex-col justify-end pb-6 pointer-events-none ${align} ${fontClass}`}>
       <AnimatePresence onExitComplete={() => overlayHidden()}>
         {visible && (
           <Dock
