@@ -164,4 +164,37 @@ export async function setInteractiveRegions(regions: InteractiveRect[]): Promise
   }
 }
 
+export interface UpdateInfo {
+  current_version: string;
+  latest_version: string;
+  has_update: boolean;
+  release_notes: string;
+  download_url: string;
+  published_at: string;
+}
+
+export async function checkForUpdates(): Promise<UpdateInfo> {
+  if (!inTauri) {
+    return {
+      current_version: "0.1.0",
+      latest_version: "v0.1.0",
+      has_update: false,
+      release_notes: "",
+      download_url: "",
+      published_at: "",
+    };
+  }
+  return await invoke<UpdateInfo>("check_for_updates");
+}
+
+export async function installUpdate(downloadUrl: string): Promise<string> {
+  if (!inTauri) return "Mock update installed";
+  return await invoke<string>("install_update", { downloadUrl });
+}
+
+export async function restartApp(): Promise<void> {
+  if (!inTauri) return;
+  await invoke("restart_app");
+}
+
 

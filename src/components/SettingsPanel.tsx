@@ -10,8 +10,20 @@ import {
   Power,
   RefreshCw,
   Search,
+  Download,
 } from "lucide-react";
-import { Settings, PROVIDERS, ReplyPosition, FontFamily, quitApp, fetchModels } from "../lib/store";
+import {
+  Settings,
+  PROVIDERS,
+  ReplyPosition,
+  FontFamily,
+  quitApp,
+  fetchModels,
+  checkForUpdates,
+  installUpdate,
+  restartApp,
+  UpdateInfo,
+} from "../lib/store";
 
 interface Props {
   settings: Settings;
@@ -45,6 +57,51 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
   const [fetched, setFetched] = useState<string[]>([]);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateSuccess, setUpdateSuccess] = useState(false);
+
+  useEffect(() => {
+    checkUpdates();
+  }, []);
+
+  const checkUpdates = async () => {
+    setCheckingUpdate(true);
+    setUpdateError(null);
+    try {
+      const info = await checkForUpdates();
+      setUpdateInfo(info);
+    } catch (err) {
+      setUpdateError(String(err));
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
+
+  const triggerUpdate = async () => {
+    if (!updateInfo?.download_url) return;
+    setUpdating(true);
+    setUpdateError(null);
+    try {
+      await installUpdate(updateInfo.download_url);
+      setUpdateSuccess(true);
+    } catch (err) {
+      setUpdateError(String(err));
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const doRestart = async () => {
+    try {
+      await restartApp();
+    } catch (err) {
+      setUpdateError(String(err));
+    }
+  };
 
   const preset = PROVIDERS.find((p) => p.id === draft.provider) ?? PROVIDERS[0];
   const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
@@ -258,6 +315,84 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="pt-2 border-t border-white/10">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className={LABEL}>Updates</p>
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-white/90 font-mono">v{updateInfo?.current_version || "0.1.0"}</span>
+                {updateInfo?.has_update ? (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    Update available
+                  </span>
+                ) : (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-white/50 border border-white/10">
+                    Up to date
+                  </span>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={checkUpdates}
+              disabled={checkingUpdate || updating}
+              className="px-2.5 py-1.5 rounded-lg bg-neutral-900 border border-white/10 hover:border-white/25 text-[11px] text-white/70 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw size={11} className={checkingUpdate ? "animate-spin text-white" : ""} />
+              <span>{checkingUpdate ? "Checking…" : "Check now"}</span>
+            </button>
+          </div>
+
+          {updateInfo?.has_update && (
+            <div className="mt-2.5 p-3 rounded-lg bg-neutral-950 border border-amber-500/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[12.5px] font-semibold text-white">
+                  Release {updateInfo.latest_version}
+                </span>
+                <span className="text-[10px] text-white/40">GitHub Release</span>
+              </div>
+              {updateInfo.release_notes && (
+                <p className="text-[11px] text-white/60 line-clamp-3 leading-relaxed whitespace-pre-wrap font-sans">
+                  {updateInfo.release_notes.replace(/###/g, "").trim()}
+                </p>
+              )}
+
+              {updateSuccess ? (
+                <button
+                  type="button"
+                  onClick={doRestart}
+                  className="w-full mt-1 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors"
+                >
+                  <RefreshCw size={12} /> Restart App to Apply
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={triggerUpdate}
+                  disabled={updating}
+                  className="w-full mt-1 py-1.5 rounded-md bg-white hover:bg-neutral-200 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                >
+                  {updating ? (
+                    <>
+                      <RefreshCw size={12} className="animate-spin" />
+                      <span>Downloading & Installing…</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download size={12} />
+                      <span>Update to {updateInfo.latest_version}</span>
+                    </>
+                  )}
+                </button>
+              )}
+
+              {updateError && (
+                <p className="text-[11px] text-rose-400 mt-1">{updateError}</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

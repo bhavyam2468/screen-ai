@@ -16,6 +16,7 @@ interface Props {
   error: string | null;
   thumb: string | null;
   settings: Settings;
+  hasUpdate?: boolean;
   onSubmit: (prompt: string) => void;
   onToggleSettings: () => void;
   onSaveSettings: (s: Settings) => void;
@@ -178,11 +179,14 @@ export default function Dock(p: Props) {
 
         <button
           onClick={p.onToggleSettings}
-          className={`p-1 rounded-md transition-colors duration-150 ${
+          className={`relative p-1 rounded-md transition-colors duration-150 ${
             p.panel === "settings" ? "text-white" : "text-white/40 hover:text-white"
           }`}
         >
           <Settings2 size={15} strokeWidth={1.8} />
+          {p.hasUpdate && (
+            <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400 ring-2 ring-black" />
+          )}
         </button>
 
         <button

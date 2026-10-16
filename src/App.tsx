@@ -12,6 +12,7 @@ import {
   inTauri,
   overlayHidden,
   saveSettings,
+  checkForUpdates,
 } from "./lib/store";
 
 // Some "free" router models are safety classifiers and only ever say this.
@@ -25,6 +26,15 @@ export default function App() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [hasUpdate, setHasUpdate] = useState(false);
+
+  useEffect(() => {
+    checkForUpdates()
+      .then((res) => {
+        if (res.has_update) setHasUpdate(true);
+      })
+      .catch(() => {});
+  }, []);
 
   const msgRef = useRef<Msg[]>([]);
   const settingsRef = useRef(settings);
@@ -191,6 +201,7 @@ export default function App() {
             error={error}
             thumb={thumb}
             settings={settings}
+            hasUpdate={hasUpdate}
             onSubmit={(p) => submit(p)}
             onToggleSettings={() => setPanel(panel === "settings" ? afterSettings() : "settings")}
             onSaveSettings={save}

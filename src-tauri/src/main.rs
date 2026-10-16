@@ -900,6 +900,191 @@ fn tray_icon_image() -> tauri::image::Image<'static> {
     tauri::image::Image::new_owned(rgba, size, size)
 }
 
+// ─── Updates ─────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct UpdateInfo {
+    pub current_version: String,
+    pub latest_version: String,
+    pub has_update: bool,
+    pub release_notes: String,
+    pub download_url: String,
+    pub published_at: String,
+}
+
+fn parse_version(v: &str) -> Vec<u32> {
+    v.trim_start_matches('v')
+        .trim_start_matches('V')
+        .split('.')
+        .filter_map(|part| part.split('-').next().unwrap_or("0").parse().ok())
+        .collect()
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let l_parts = parse_version(latest);
+    let c_parts = parse_version(current);
+    for (l, c) in l_parts.iter().zip(c_parts.iter()) {
+        if l > c {
+            return true;
+        }
+        if l < c {
+            return false;
+        }
+    }
+    l_parts.len() > c_parts.len()
+}
+
+#[tauri::command]
+async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateInfo, String> {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let url = "https://api.github.com/repos/bhavyam2468/screen-ai/releases/latest";
+    let res = state
+        .client
+        .get(url)
+        .header("User-Agent", "screen-ai")
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to contact GitHub: {e}"))?;
+
+    if !res.status().is_success() {
+        return Err(format!("GitHub returned HTTP {}", res.status()));
+    }
+
+    let json: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse release info: {e}"))?;
+
+    let tag = json["tag_name"].as_str().unwrap_or("").to_string();
+    let release_notes = json["body"].as_str().unwrap_or("").to_string();
+    let published_at = json["published_at"].as_str().unwrap_or("").to_string();
+
+    let mut download_url = String::new();
+    if let Some(assets) = json["assets"].as_array() {
+        for asset in assets {
+            if let Some(name) = asset["name"].as_str() {
+                if name.ends_with(".tar.gz") {
+                    if let Some(dl) = asset["browser_download_url"].as_str() {
+                        download_url = dl.to_string();
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if download_url.is_empty() && !tag.is_empty() {
+        download_url = format!(
+            "https://github.com/bhavyam2468/screen-ai/releases/download/{tag}/screen-ai-x86_64-linux.tar.gz"
+        );
+    }
+
+    let has_update = is_newer_version(&tag, &current_version);
+
+    Ok(UpdateInfo {
+        current_version,
+        latest_version: tag,
+        has_update,
+        release_notes,
+        download_url,
+        published_at,
+    })
+}
+
+#[tauri::command]
+async fn install_update(download_url: String, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    if download_url.is_empty() {
+        return Err("Download URL is empty".into());
+    }
+
+    let current_exe = std::env::current_exe().map_err(|e| format!("Cannot locate current executable: {e}"))?;
+    let home_bin = dirs::home_dir().map(|h| h.join(".local/bin/screen-ai"));
+    let target_path = if current_exe.exists() && current_exe.to_string_lossy().contains(".local/bin") {
+        current_exe.clone()
+    } else if let Some(ref hb) = home_bin {
+        if hb.exists() {
+            hb.clone()
+        } else {
+            current_exe.clone()
+        }
+    } else {
+        current_exe.clone()
+    };
+
+    let temp_dir = std::env::temp_dir().join(format!("screen-ai-update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
+
+    let archive_path = temp_dir.join("update.tar.gz");
+    let resp = state
+        .client
+        .get(&download_url)
+        .header("User-Agent", "screen-ai")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download update: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Download failed with HTTP {}", resp.status()));
+    }
+
+    let bytes = resp.bytes().await.map_err(|e| format!("Failed to read response: {e}"))?;
+    std::fs::write(&archive_path, bytes).map_err(|e| format!("Failed to save archive: {e}"))?;
+
+    let status = std::process::Command::new("tar")
+        .args(["-xzf", archive_path.to_str().unwrap(), "-C", temp_dir.to_str().unwrap()])
+        .status()
+        .map_err(|e| format!("Failed to execute tar: {e}"))?;
+
+    if !status.success() {
+        return Err("tar extraction failed".into());
+    }
+
+    let new_binary = temp_dir.join("screen-ai");
+    if !new_binary.exists() {
+        return Err("Update package does not contain 'screen-ai' binary".into());
+    }
+
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(&new_binary, std::fs::Permissions::from_mode(0o755));
+
+    let parent = target_path.parent().unwrap_or(&temp_dir);
+    let staged = parent.join(format!(".screen-ai.new-{}", std::process::id()));
+    std::fs::copy(&new_binary, &staged).map_err(|e| format!("Failed to stage binary: {e}"))?;
+    let _ = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755));
+
+    std::fs::rename(&staged, &target_path).map_err(|e| {
+        let _ = std::fs::remove_file(&staged);
+        format!("Failed to install binary to {}: {e}", target_path.display())
+    })?;
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
+    Ok(format!("Updated successfully to {}", target_path.display()))
+}
+
+#[tauri::command]
+fn restart_app() -> Result<(), String> {
+    let current_exe = std::env::current_exe().map_err(|e| format!("Cannot locate current executable: {e}"))?;
+    let home_bin = dirs::home_dir().map(|h| h.join(".local/bin/screen-ai"));
+    let target_path = if let Some(ref hb) = home_bin {
+        if hb.exists() { hb.clone() } else { current_exe }
+    } else {
+        current_exe
+    };
+
+    std::process::Command::new(&target_path)
+        .arg("--toggle")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to launch updated binary: {e}"))?;
+
+    std::process::exit(0);
+}
+
 // ─── App ─────────────────────────────────────────────────────────────────────
 
 /// gtk-layer-shell must be loaded before libwayland-client. Re-exec once with
@@ -1028,7 +1213,10 @@ fn main() {
             quit_app,
             fetch_models,
             set_interactive_regions,
-            overlay_hidden
+            overlay_hidden,
+            check_for_updates,
+            install_update,
+            restart_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running screen-ai");
