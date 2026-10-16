@@ -25,7 +25,7 @@ Works natively across **Niri**, **Hyprland**, **Sway**, **KDE Plasma**, **GNOME*
 Run this one-liner in your terminal:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/bhavyam2468/screen-ai/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bhavyam2468/screen-ai/refs/heads/main/install.sh | bash
 ```
 
 The interactive installer will:
