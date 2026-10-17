@@ -532,63 +532,16 @@ body {
   opacity: 1;
 }
 
-kbd {
-  display: inline-flex;
-  align-items: center;
-  min-height: 18px;
-  padding: 2px 5px;
-  border: 1px solid var(--border-soft);
-  border-radius: 5px;
-  background: rgba(var(--window-rgb), 0.72);
-  color: var(--fg-mute);
-  font: 10px/1 "Geist Mono Variable", "Geist Mono", ui-monospace, monospace;
-  white-space: nowrap;
-}
-
 .omnibox-panel {
   overflow: hidden;
   border-bottom: 1px solid var(--border-soft);
   background: rgba(var(--window-rgb), 0.97);
 }
-.omnibox-heading {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-height: 35px;
-  padding: 8px 14px 5px;
-  color: var(--fg-mute);
-  font-size: 10.5px;
-  letter-spacing: 0.075em;
-  text-transform: uppercase;
-}
-.omnibox-heading-icon,
-.omnibox-icon {
-  display: grid;
-  flex: none;
-  place-items: center;
-  color: var(--accent);
-}
-.omnibox-heading-title {
-  color: var(--fg-dim);
-  font-weight: 650;
-}
-.omnibox-heading-hint {
-  font-size: 9.5px;
-  letter-spacing: 0.01em;
-  text-transform: none;
-  opacity: 0.72;
-}
-.omnibox-heading-spacer {
-  flex: 1;
-}
-.omnibox-heading kbd + kbd {
-  margin-left: -3px;
-}
 .omnibox-list {
-  max-height: min(280px, 38vh);
+  max-height: min(220px, 32vh);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 3px 7px 7px;
+  padding: 3px 5px 5px;
 }
 .omnibox-row {
   position: relative;
@@ -596,9 +549,9 @@ kbd {
   width: 100%;
   min-width: 0;
   align-items: center;
-  gap: 10px;
-  min-height: 36px;
-  padding: 6px 9px;
+  gap: 8px;
+  min-height: 31px;
+  padding: 4px 7px;
   border-radius: 9px;
   color: var(--fg-dim);
   text-align: left;
@@ -624,8 +577,8 @@ kbd {
   color: var(--accent);
 }
 .omnibox-label {
-  flex: none;
-  max-width: 38%;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   color: inherit;
   font-size: 12px;
@@ -653,38 +606,18 @@ kbd {
   border-radius: 999px;
   background: #f5b942;
 }
-.omnibox-empty {
-  display: flex;
-  min-height: 58px;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
+.omnibox-loading {
+  display: grid;
+  min-height: 40px;
+  place-items: center;
   color: var(--fg-mute);
-  font-size: 11px;
 }
-.omnibox-foot {
-  display: flex;
-  min-height: 27px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 2px 14px 8px;
+.omnibox-query {
+  padding: 6px 12px 0;
   color: var(--fg-mute);
-  font-size: 9.5px;
+  font-size: 10px;
 }
-.omnibox-foot > span {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.omnibox-foot kbd {
-  min-height: 16px;
-  font-size: 9px;
-}
+
 .dock-notice {
   display: flex;
   align-items: flex-start;
@@ -734,30 +667,23 @@ kbd {
 .snip-hud {
   position: fixed;
   z-index: 2;
-  top: 18px;
-  left: 50%;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-height: 38px;
-  padding: 5px 8px 5px 12px;
-  transform: translateX(-50%);
+  top: 12px;
+  right: 12px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
   border: 1px solid var(--border-strong);
-  border-radius: 11px;
-  background: rgba(var(--window-rgb), 0.97);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
-  color: var(--fg);
+  border-radius: 8px;
+  background: rgba(var(--window-rgb), 0.92);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   cursor: default;
-  font-size: 11px;
-  backdrop-filter: blur(12px);
 }
-.snip-hud > svg {
-  color: var(--accent);
-}
+
 .snip-hud > button {
   display: grid;
-  width: 25px;
-  height: 25px;
+  width: 100%;
+  height: 100%;
   place-items: center;
   border-radius: 7px;
   color: var(--fg-mute);

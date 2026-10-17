@@ -2,7 +2,10 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Mutex,
+};
 use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -132,9 +135,14 @@ pub struct AppState {
     #[allow(dead_code)]
     pub last_prompt: Mutex<String>,
     pub current_thumb: Mutex<String>,
+    pub current_background: Mutex<String>,
     pub initial_view: Mutex<String>,
-    pub shown: std::sync::atomic::AtomicBool,
-    pub layer: std::sync::atomic::AtomicBool,
+    pub shown: AtomicBool,
+    pub layer: AtomicBool,
+    pub input_revision: AtomicU64,
+    pub input_sequence: AtomicU64,
+    pub overlay_revision: AtomicU64,
+    pub screenshot_fallback: AtomicBool,
 }
 
 fn config_path() -> PathBuf {
@@ -262,6 +270,11 @@ fn process_images(full: &PathBuf, send: &PathBuf) -> Result<String, String> {
             .map_err(|e| format!("thumb encode: {e}"))?;
     }
     Ok(format!("data:image/png;base64,{}", B64.encode(&buf)))
+}
+
+fn jpeg_data_url(path: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read screenshot: {e}"))?;
+    Ok(format!("data:image/jpeg;base64,{}", B64.encode(bytes)))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -469,8 +482,6 @@ fn crop_screenshot(
 // Everywhere else (X11, GNOME/Mutter) it falls back to a plain borderless
 // window that is shown/hidden, with the same input-shape trick.
 
-use std::sync::atomic::Ordering;
-
 #[derive(Deserialize, Debug, Clone)]
 pub struct Rect {
     pub x: i32,
@@ -493,13 +504,13 @@ fn is_layer(app: &AppHandle) -> bool {
 
 fn is_shown(app: &AppHandle) -> bool {
     app.try_state::<AppState>()
-        .map(|s| s.shown.load(Ordering::Relaxed))
+        .map(|s| s.shown.load(Ordering::SeqCst))
         .unwrap_or(false)
 }
 
 fn set_shown(app: &AppHandle, v: bool) {
     if let Some(s) = app.try_state::<AppState>() {
-        s.shown.store(v, Ordering::Relaxed);
+        s.shown.store(v, Ordering::SeqCst);
     }
 }
 
@@ -520,26 +531,35 @@ where
 
 fn apply_region(g: &gtk::ApplicationWindow, rects: &[Rect]) {
     use gtk::prelude::*;
-    let Some(gdk) = g.window() else {
-        return;
-    };
     let region = cairo::Region::create();
-    for r in rects {
+    for rect in rects {
+        if rect.width <= 0 || rect.height <= 0 {
+            continue;
+        }
         let _ = region.union_rectangle(&cairo::RectangleInt::new(
-            r.x,
-            r.y,
-            r.width.max(1),
-            r.height.max(1),
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
         ));
     }
-    gdk.input_shape_combine_region(&region, 0, 0);
+    // Set the shape through GtkWidget so GTK keeps it in sync with its GDK
+    // surface instead of replacing a direct GdkWindow update on the next paint.
+    g.input_shape_combine_region(Some(&region));
 }
 
-fn set_keyboard(app: &AppHandle, mode: &'static str) {
+fn set_keyboard(app: &AppHandle, mode: &'static str, revision: u64) {
     if !is_layer(app) {
         return;
     }
+    let owner = app.clone();
     with_gtk(app, move |g| {
+        let Some(state) = owner.try_state::<AppState>() else {
+            return;
+        };
+        if state.overlay_revision.load(Ordering::SeqCst) != revision {
+            return;
+        }
         use gtk_layer_shell::{KeyboardMode, LayerShell};
         g.set_keyboard_mode(match mode {
             "exclusive" => KeyboardMode::Exclusive,
@@ -638,37 +658,114 @@ fn init_layer_shell(app: &AppHandle) {
     let _ = win.show();
 }
 
-fn show_overlay(app: &AppHandle) {
+fn show_overlay(app: &AppHandle) -> Option<u64> {
+    let state = app.try_state::<AppState>()?;
+    let overlay_revision = state.overlay_revision.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    let input_revision = state.input_revision.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     set_shown(app, true);
+
+    // Start every presentation click-through. A queued region update from the
+    // previous presentation cannot re-enable a stale/full-screen hit area.
+    let owner = app.clone();
+    with_gtk(app, move |g| {
+        let Some(state) = owner.try_state::<AppState>() else {
+            return;
+        };
+        if is_shown(&owner) && state.input_revision.load(Ordering::SeqCst) == input_revision {
+            apply_region(g, &[]);
+        }
+    });
+
     if is_layer(app) {
-        // Exclusive grabs keyboard focus right away; once we have it, relax to
-        // on-demand so the user can click into other windows normally.
-        set_keyboard(app, "exclusive");
-        let a = app.clone();
+        // Take keyboard focus only for the initial compose, then let the
+        // compositor use normal click-to-focus rules.
+        set_keyboard(app, "exclusive", overlay_revision);
+        let owner = app.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(500));
-            if is_shown(&a) {
-                set_keyboard(&a, "ondemand");
+            let Some(state) = owner.try_state::<AppState>() else {
+                return;
+            };
+            if is_shown(&owner) && state.overlay_revision.load(Ordering::SeqCst) == overlay_revision {
+                set_keyboard(&owner, "ondemand", overlay_revision);
             }
         });
-    } else if let Some(w) = app.get_webview_window("main") {
-        show_fallback(&w);
+    } else if let Some(window) = app.get_webview_window("main") {
+        show_fallback(&window);
     }
+    Some(overlay_revision)
 }
 
 fn hide_overlay_now(app: &AppHandle) {
     set_shown(app, false);
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    let overlay_revision = state.overlay_revision.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    let input_revision = state.input_revision.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     if is_layer(app) {
-        with_gtk(app, |g| apply_region(g, &[]));
-        set_keyboard(app, "none");
-    } else if let Some(w) = app.get_webview_window("main") {
-        let _ = w.hide();
+        let owner = app.clone();
+        with_gtk(app, move |g| {
+            let Some(state) = owner.try_state::<AppState>() else {
+                return;
+            };
+            if state.input_revision.load(Ordering::SeqCst) == input_revision {
+                apply_region(g, &[]);
+            }
+        });
+        set_keyboard(app, "none", overlay_revision);
+    } else if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
     }
 }
 
 #[tauri::command]
-fn set_interactive_regions(app: AppHandle, regions: Vec<Rect>) {
-    with_gtk(&app, move |g| apply_region(g, &regions));
+fn set_interactive_regions(
+    app: AppHandle,
+    regions: Vec<Rect>,
+    overlay_revision: u64,
+    sequence: u64,
+) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if !is_shown(&app) || state.overlay_revision.load(Ordering::SeqCst) != overlay_revision {
+        return;
+    }
+
+    // Tauri commands may reach GTK out of order. Keep the caller's monotonic
+    // sequence so a delayed full-screen snipping region cannot replace the
+    // newer compact card region after snipping has ended.
+    let mut previous = state.input_sequence.load(Ordering::SeqCst);
+    loop {
+        if sequence <= previous {
+            return;
+        }
+        match state.input_sequence.compare_exchange_weak(
+            previous,
+            sequence,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => break,
+            Err(actual) => previous = actual,
+        }
+    }
+
+    let revision = state.input_revision.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    let owner = app.clone();
+    with_gtk(&app, move |g| {
+        let Some(state) = owner.try_state::<AppState>() else {
+            return;
+        };
+        if is_shown(&owner)
+            && state.overlay_revision.load(Ordering::SeqCst) == overlay_revision
+            && state.input_sequence.load(Ordering::SeqCst) == sequence
+            && state.input_revision.load(Ordering::SeqCst) == revision
+        {
+            apply_region(g, &regions);
+        }
+    });
 }
 
 #[tauri::command]
@@ -692,11 +789,27 @@ fn summon(app: &AppHandle, view: &str) {
     let _ = std::fs::remove_file(&full);
     let _ = std::fs::remove_file(&send);
 
-    // Capture BEFORE showing so the overlay is never in the shot.
+    // Capture BEFORE showing so the overlay is never in the shot. On
+    // non-composited i3/X11 this also supplies the transparent window's visual
+    // backdrop while preserving the captured image for the vision request.
+    let use_background = app
+        .try_state::<AppState>()
+        .map(|state| state.screenshot_fallback.load(Ordering::Relaxed))
+        .unwrap_or(false);
+    let mut background = String::new();
     let thumb = match capture_screen(&full) {
-        Ok(()) => process_images(&full, &send).unwrap_or_default(),
-        Err(e) => {
-            eprintln!("screen-ai capture failed: {e}");
+        Ok(()) => {
+            let processed = process_images(&full, &send);
+            if use_background {
+                match jpeg_data_url(&send) {
+                    Ok(image) => background = image,
+                    Err(error) => eprintln!("screen-ai desktop background unavailable: {error}"),
+                }
+            }
+            processed.unwrap_or_default()
+        }
+        Err(error) => {
+            eprintln!("screen-ai capture failed: {error}");
             String::new()
         }
     };
@@ -705,13 +818,26 @@ fn summon(app: &AppHandle, view: &str) {
         if let Ok(mut t) = state.current_thumb.lock() {
             *t = thumb.clone();
         }
+        if let Ok(mut image) = state.current_background.lock() {
+            *image = background.clone();
+        }
         if let Ok(mut v) = state.initial_view.lock() {
             *v = view.to_string();
         }
     }
 
-    show_overlay(app);
-    let _ = window.emit("summon", serde_json::json!({ "thumb": thumb, "view": view }));
+    let Some(overlay_revision) = show_overlay(app) else {
+        return;
+    };
+    let _ = window.emit(
+        "summon",
+        serde_json::json!({
+            "thumb": thumb,
+            "background": background,
+            "view": view,
+            "overlay_revision": overlay_revision,
+        }),
+    );
 }
 
 fn do_toggle(app: &AppHandle) {
@@ -726,13 +852,21 @@ fn show_settings(app: &AppHandle) {
 fn get_initial_state(app: AppHandle, state: State<'_, AppState>) -> serde_json::Value {
     let settings = get_settings();
     let thumb = state.current_thumb.lock().map(|t| t.clone()).unwrap_or_default();
+    let background = if state.screenshot_fallback.load(Ordering::Relaxed) {
+        state.current_background.lock().map(|image| image.clone()).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let view = state.initial_view.lock().map(|v| v.clone()).unwrap_or_else(|_| "ask".into());
     let needs_key = settings.provider != "ollama" && settings.api_key.trim().is_empty();
     serde_json::json!({
         "settings": settings,
         "thumb": thumb,
+        "background": background,
         "view": view,
         "shown": is_shown(&app),
+        "overlay_revision": state.overlay_revision.load(Ordering::SeqCst),
+        "input_sequence": state.input_sequence.load(Ordering::SeqCst),
         "needs_key": needs_key,
     })
 }
@@ -1458,6 +1592,45 @@ fn ensure_layer_preload() {
     eprintln!("screen-ai: re-exec failed: {err}");
 }
 
+fn is_x11_i3_session() -> bool {
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|session| session.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false);
+    if wayland {
+        return false;
+    }
+
+    std::env::var_os("I3SOCK").is_some()
+        || ["XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP", "DESKTOP_SESSION"]
+            .iter()
+            .any(|name| {
+                std::env::var(*name)
+                    .map(|desktop| {
+                        desktop
+                            .to_ascii_lowercase()
+                            .split(|character| matches!(character, ':' | ',' | ' '))
+                            .any(|name| name == "i3" || name == "i3wm")
+                    })
+                    .unwrap_or(false)
+            })
+}
+
+fn has_known_x11_compositor() -> bool {
+    let Ok(processes) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    processes.flatten().any(|process| {
+        if !process.file_name().to_string_lossy().bytes().all(|byte| byte.is_ascii_digit()) {
+            return false;
+        }
+        let Ok(name) = std::fs::read_to_string(process.path().join("comm")) else {
+            return false;
+        };
+        matches!(name.trim(), "picom" | "compton" | "xcompmgr" | "compiz" | "kwin_x11")
+    })
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -1476,6 +1649,7 @@ fn main() {
         .timeout(Duration::from_secs(120))
         .build()
         .expect("http client");
+    let screenshot_fallback = is_x11_i3_session() && !has_known_x11_compositor();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
@@ -1502,9 +1676,14 @@ fn main() {
             client,
             last_prompt: Mutex::new(String::new()),
             current_thumb: Mutex::new(String::new()),
+            current_background: Mutex::new(String::new()),
             initial_view: Mutex::new("ask".to_string()),
-            shown: std::sync::atomic::AtomicBool::new(false),
-            layer: std::sync::atomic::AtomicBool::new(false),
+            shown: AtomicBool::new(false),
+            layer: AtomicBool::new(false),
+            input_revision: AtomicU64::new(0),
+            input_sequence: AtomicU64::new(0),
+            overlay_revision: AtomicU64::new(0),
+            screenshot_fallback: AtomicBool::new(screenshot_fallback),
         })
         .setup(|app| {
             init_layer_shell(app.handle());

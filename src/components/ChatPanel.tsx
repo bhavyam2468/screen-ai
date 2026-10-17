@@ -13,7 +13,6 @@ interface Props {
   messages: Msg[];
   streaming: boolean;
   error: string | null;
-  model: string;
   onClose: () => void;
   onRetry: () => void;
 }
@@ -112,7 +111,7 @@ function MsgIn({
   );
 }
 
-export default function ChatPanel({ messages, streaming, error, model, onClose, onRetry }: Props) {
+export default function ChatPanel({ messages, streaming, error, onClose, onRetry }: Props) {
   const [copied, setCopied] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedRef = useRef(true);
@@ -163,30 +162,18 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
 
   return (
     <div className="flex flex-col">
-      <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-2 shrink-0">
-        <span className="relative flex w-1.5 h-1.5">
-          {streaming && (
-            <span className="absolute inline-flex w-full h-full rounded-full accent-pulse" />
-          )}
-          <span
-            className={`relative inline-flex w-1.5 h-1.5 rounded-full transition-colors duration-300 ${
-              streaming ? "bg-white" : error ? "bg-rose-400" : "bg-emerald-400"
-            }`}
-          />
-        </span>
-        <span className="text-[11px] text-white/40 truncate">{model}</span>
-        <div className="flex-1" />
+      <div className="flex h-7 shrink-0 items-center justify-end gap-1 px-2 pt-1">
         {error && !streaming && (
-          <button onClick={onRetry} aria-label="Retry response" className={btn}>
+          <button onClick={onRetry} aria-label="Retry" className={btn}>
             <RotateCcw size={13} />
           </button>
         )}
         {last && (
-          <button onClick={copy} aria-label="Copy latest response" className={btn}>
+          <button onClick={copy} aria-label="Copy" className={btn}>
             {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
           </button>
         )}
-        <button onClick={onClose} aria-label="Close chat" className={btn}>
+        <button onClick={onClose} aria-label="Close" className={btn}>
           <X size={14} />
         </button>
       </div>

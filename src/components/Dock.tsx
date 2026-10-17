@@ -26,7 +26,6 @@ import {
   ScreenRect,
   Settings,
   SettingsSection,
-  SystemTheme,
   searchLocalFiles,
   setInteractiveRegions,
 } from "../lib/store";
@@ -36,36 +35,36 @@ export type Panel = "none" | "chat" | "settings";
 const EASE = [0.22, 1, 0.36, 1] as const;
 const LAYOUT_SPRING = { type: "spring", stiffness: 360, damping: 35, mass: 0.88 } as const;
 
-type PaletteItem = { id: string; label: string; hint: string; value: string; icon: typeof Command };
-type SlashDefinition = { name: string; hint: string; icon: typeof Command };
+type PaletteItem = { id: string; label: string; value: string; icon: typeof Command };
+type SlashDefinition = { name: string; icon: typeof Command };
 
 const SLASH_COMMANDS: SlashDefinition[] = [
-  { name: "model", hint: "Choose a provider and model", icon: KeyRound },
-  { name: "provider", hint: "Switch to a saved provider profile", icon: Settings2 },
-  { name: "key", hint: "Set a provider API key locally", icon: KeyRound },
-  { name: "theme", hint: "Auto, dark, light, or Qt / Matugen", icon: Palette },
-  { name: "settings", hint: "Open a settings subpanel", icon: Settings2 },
-  { name: "update", hint: "Check, build, or restart Screen AI", icon: RefreshCw },
-  { name: "capture", hint: "Select a region of the current screenshot", icon: Crosshair },
-  { name: "hide", hint: "Dismiss the overlay", icon: X },
-  { name: "exit", hint: "Quit Screen AI", icon: X },
-  { name: "help", hint: "Show keyboard commands", icon: Command },
+  { name: "model", icon: KeyRound },
+  { name: "provider", icon: Settings2 },
+  { name: "key", icon: KeyRound },
+  { name: "theme", icon: Palette },
+  { name: "settings", icon: Settings2 },
+  { name: "update", icon: RefreshCw },
+  { name: "capture", icon: Crosshair },
+  { name: "hide", icon: X },
+  { name: "exit", icon: X },
 ];
 
-const THEME_OPTIONS: { value: string; label: string; hint: string; icon: typeof Sun }[] = [
-  { value: "auto", label: "Auto", hint: "Follow the desktop", icon: SunMoon },
-  { value: "dark", label: "Dark", hint: "Use the dark palette", icon: Moon },
-  { value: "light", label: "Light", hint: "Use the light palette", icon: Sun },
-  { value: "qt", label: "Qt / Matugen", hint: "Follow detected Qt colors", icon: Palette },
+const THEME_OPTIONS: { value: string; label: string; icon: typeof Sun }[] = [
+  { value: "auto", label: "Auto", icon: SunMoon },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "light", label: "Light", icon: Sun },
+  { value: "qt", label: "Qt / Matugen", icon: Palette },
 ];
 
 const SETTINGS_OPTIONS = [
-  { value: "model", label: "Provider & model", hint: "API keys, models, output limit", icon: KeyRound },
-  { value: "appearance", label: "Appearance", hint: "Theme, opacity, position", icon: Palette },
-  { value: "updates", label: "Updates", hint: "Check and build source", icon: RefreshCw },
+  { value: "model", label: "Model", icon: KeyRound },
+  { value: "appearance", label: "Appearance", icon: Palette },
+  { value: "updates", label: "Updates", icon: RefreshCw },
 ];
 
 interface Props {
+  sessionRevision: number;
   panel: Panel;
   settingsSection: SettingsSection;
   messages: Msg[];
@@ -75,13 +74,11 @@ interface Props {
   thumb: string | null;
   snipping: boolean;
   settings: Settings;
-  systemTheme: SystemTheme;
   hasUpdate?: boolean;
   onSubmit: (prompt: string) => void;
   onSettingsSectionChange: (section: SettingsSection) => void;
   onToggleSettings: () => void;
   onSaveSettings: (settings: Settings) => void;
-  onCloseSettings: () => void;
   onStartSnip: () => void;
   onCancelSnip: () => void;
   onSelectSnip: (rect: ScreenRect) => void;
@@ -143,53 +140,41 @@ function FilePicker({
   activeIndex,
   onChoose,
   onHighlight,
-  query,
 }: {
   items: FileSuggestion[];
   loading: boolean;
   activeIndex: number;
   onChoose: (item: FileSuggestion) => void;
   onHighlight: (index: number) => void;
-  query: string;
 }) {
   return (
-    <div className="omnibox-panel" role="listbox" aria-label="Local files">
-      <div className="omnibox-heading">
-        <span className="omnibox-heading-icon"><FolderOpen size={13} /></span>
-        <span className="omnibox-heading-title">Mention a local file</span>
-        <span className="omnibox-heading-hint">read-only · text files</span>
-        <span className="omnibox-heading-spacer" />
-        <kbd>↑↓</kbd><kbd>↵</kbd>
-      </div>
-      <div className="omnibox-list">
-        {loading && (
-          <div className="omnibox-empty"><Loader2 size={13} className="animate-spin" /> Searching your home folder…</div>
-        )}
-        {!loading && items.map((item, index) => {
-          const Icon = item.is_dir ? FolderOpen : FileText;
-          return (
-            <button
-              key={item.path}
-              type="button"
-              role="option"
-              aria-selected={activeIndex === index}
-              className={`omnibox-row ${activeIndex === index ? "is-active" : ""}`}
-              onMouseDown={(event) => event.preventDefault()}
-              onMouseEnter={() => onHighlight(index)}
-              onClick={() => onChoose(item)}
-            >
-              <span className="omnibox-icon"><Icon size={14} /></span>
-              <span className="omnibox-label">{item.name}</span>
-              <span className="omnibox-hint" title={item.path}>{item.path.replace(/^\/home\/[^/]+/, "~")}</span>
-              {item.is_dir && <ChevronRight size={12} className="omnibox-more" />}
-            </button>
-          );
-        })}
-        {!loading && !items.length && (
-          <div className="omnibox-empty">{query ? "No matching local files" : "No files found in your home folder"}</div>
-        )}
-      </div>
-      <div className="omnibox-foot"><span>Selected files are read as text and sent with your prompt.</span><kbd>Esc</kbd></div>
+    <div className="omnibox-panel" role="listbox" aria-label="Local files" aria-busy={loading}>
+      {loading ? (
+        <div className="omnibox-loading"><Loader2 size={14} className="animate-spin" /></div>
+      ) : (
+        <div className="omnibox-list">
+          {items.map((item, index) => {
+            const Icon = item.is_dir ? FolderOpen : FileText;
+            return (
+              <button
+                key={item.path}
+                type="button"
+                role="option"
+                aria-selected={activeIndex === index}
+                className={`omnibox-row ${activeIndex === index ? "is-active" : ""}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => onHighlight(index)}
+                onClick={() => onChoose(item)}
+              >
+                <span className="omnibox-icon"><Icon size={14} /></span>
+                <span className="omnibox-label">{item.name}</span>
+                <span className="omnibox-hint">{item.path.replace(/^\/home\/[^/]+/, "~")}</span>
+                {item.is_dir && <ChevronRight size={12} className="omnibox-more" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -224,7 +209,6 @@ export default function Dock(p: Props) {
         .map((item) => ({
           id: item.name,
           label: `/${item.name}`,
-          hint: item.hint,
           value: `/${item.name}`,
           icon: item.icon,
         }));
@@ -236,7 +220,6 @@ export default function Dock(p: Props) {
         .map((item) => ({
           id: item.name,
           label: `/${item.name}`,
-          hint: item.hint,
           value: `/${item.name}`,
           icon: item.icon,
         }));
@@ -247,7 +230,7 @@ export default function Dock(p: Props) {
     if (command === "theme" && !raw.includes(" ")) {
       return THEME_OPTIONS
         .filter((item) => item.value.startsWith(query) || item.label.toLowerCase().includes(query))
-        .map((item) => ({ id: item.value, label: item.label, hint: item.hint, value: `/theme ${item.value}`, icon: item.icon }));
+        .map((item) => ({ id: item.value, label: item.label, value: `/theme ${item.value}`, icon: item.icon }));
     }
     if ((command === "provider" || command === "key" || command === "api-key") && !raw.includes(" ")) {
       return PROVIDERS
@@ -255,7 +238,6 @@ export default function Dock(p: Props) {
         .map((item) => ({
           id: item.id,
           label: item.label,
-          hint: item.id === p.settings.provider ? "current provider" : item.needsKey ? "saved profile" : "local model server",
           value: command === "provider" ? `/provider ${item.id}` : `/key ${item.id}`,
           icon: KeyRound,
         }));
@@ -263,12 +245,12 @@ export default function Dock(p: Props) {
     if (command === "model" && !raw.includes(" ")) {
       return PROVIDERS
         .filter((item) => item.id.startsWith(query) || item.label.toLowerCase().includes(query))
-        .map((item) => ({ id: item.id, label: item.label, hint: p.settings.provider_profiles[item.id]?.model || "open model settings", value: `/model ${item.id}`, icon: KeyRound }));
+        .map((item) => ({ id: item.id, label: item.label, value: `/model ${item.id}`, icon: KeyRound }));
     }
     if ((command === "settings" || command === "preferences") && !raw.includes(" ")) {
       return SETTINGS_OPTIONS
         .filter((item) => item.value.startsWith(query) || item.label.toLowerCase().includes(query))
-        .map((item) => ({ id: item.value, label: item.label, hint: item.hint, value: `/settings ${item.value}`, icon: item.icon }));
+        .map((item) => ({ id: item.value, label: item.label, value: `/settings ${item.value}`, icon: item.icon }));
     }
     return [];
   }, [argumentMatch, commandMatch, forcedCommands, forcedQuery, p.settings.provider, p.settings.provider_profiles]);
@@ -323,7 +305,10 @@ export default function Dock(p: Props) {
   useEffect(() => {
     const element = cardRef.current;
     if (p.snipping) {
-      setInteractiveRegions([{ x: 0, y: 0, width: window.innerWidth, height: window.innerHeight }]);
+      setInteractiveRegions(
+        [{ x: 0, y: 0, width: window.innerWidth, height: window.innerHeight }],
+        p.sessionRevision,
+      );
       return;
     }
     if (!element) return;
@@ -338,7 +323,7 @@ export default function Dock(p: Props) {
           y: Math.max(0, Math.floor(rect.top - pad)),
           width: Math.ceil(rect.width + pad * 2),
           height: Math.ceil(rect.height + pad * 2),
-        }]);
+        }], p.sessionRevision);
       });
     };
     const observer = new ResizeObserver(push);
@@ -350,7 +335,7 @@ export default function Dock(p: Props) {
       observer.disconnect();
       window.removeEventListener("resize", push);
     };
-  }, [p.snipping]);
+  }, [p.snipping, p.sessionRevision]);
 
   // The overlay is summoned focused; when a panel closes, return focus to the one input.
   useEffect(() => {
@@ -502,7 +487,7 @@ export default function Dock(p: Props) {
             y: Math.max(0, Math.floor(rect.top - 6)),
             width: Math.ceil(rect.width + 12),
             height: Math.ceil(rect.height + 12),
-          }]);
+          }], p.sessionRevision);
         }}
         style={{
           backgroundColor: `rgba(var(--window-rgb),${opacity})`,
@@ -526,17 +511,14 @@ export default function Dock(p: Props) {
                     <SettingsPanel
                       settings={p.settings}
                       section={p.settingsSection}
-                      systemTheme={p.systemTheme}
                       onSectionChange={p.onSettingsSectionChange}
                       onSave={p.onSaveSettings}
-                      onClose={p.onCloseSettings}
                     />
                   ) : (
                     <ChatPanel
                       messages={p.messages}
                       streaming={p.streaming}
                       error={p.error}
-                      model={p.settings.model}
                       onClose={p.onDismiss}
                       onRetry={p.onRetry}
                     />
@@ -562,22 +544,13 @@ export default function Dock(p: Props) {
                   items={fileItems}
                   loading={searchingFiles}
                   activeIndex={activeIndex}
-                  query={fileTrigger?.query ?? ""}
                   onChoose={chooseFile}
                   onHighlight={setHighlighted}
                 />
               ) : (
-                <div className="omnibox-panel" role="listbox" aria-label="Slash commands">
-                  <div className="omnibox-heading">
-                    <span className="omnibox-heading-icon"><Command size={13} /></span>
-                    <span className="omnibox-heading-title">Commands</span>
-                    <span className="omnibox-heading-hint">
-                      {forcedQueryMode && forcedQuery ? `filter · ${forcedQuery}` : "type to filter"}
-                    </span>
-                    <span className="omnibox-heading-spacer" />
-                    <kbd>↑↓</kbd><kbd>↵</kbd>
-                  </div>
-                  <div className="omnibox-list">
+                <div className="omnibox-panel">
+                  {forcedQueryMode && forcedQuery && <div className="omnibox-query">{forcedQuery}</div>}
+                  <div className="omnibox-list" role="listbox" aria-label="Commands">
                     {paletteItems.map((item, index) => {
                       const Icon = item.icon;
                       return (
@@ -593,15 +566,10 @@ export default function Dock(p: Props) {
                         >
                           <span className="omnibox-icon"><Icon size={14} /></span>
                           <span className="omnibox-label">{item.label}</span>
-                          <span className="omnibox-hint">{item.hint}</span>
-                          {item.id === "update" && p.hasUpdate && <span className="omnibox-update-dot" />}
-                          <ChevronRight size={12} className="omnibox-more" />
                         </button>
                       );
                     })}
-                    {!paletteItems.length && <div className="omnibox-empty">No matching commands</div>}
                   </div>
-                  <div className="omnibox-foot"><span><kbd>Ctrl K</kbd> opens or closes this palette · <kbd>/</kbd> starts a command</span><kbd>Esc</kbd></div>
                 </div>
               )}
             </motion.div>
@@ -628,12 +596,11 @@ export default function Dock(p: Props) {
             type="button"
             onClick={p.onStartSnip}
             aria-label="Select a region from this screenshot"
-            title="Click to snip a region · screenshot attached"
             className="shot-button group relative mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-white/15 bg-neutral-800 transition-[border-color,transform] duration-200 hover:-translate-y-px hover:border-white/30"
           >
             {p.thumb ? (
               <>
-                <img src={p.thumb} alt="Current screenshot — click to select a region" draggable={false} className="h-full w-full object-cover" />
+                <img src={p.thumb} alt="" draggable={false} className="h-full w-full object-cover" />
                 <span className="shot-hover"><Crosshair size={13} /></span>
               </>
             ) : (
@@ -652,7 +619,7 @@ export default function Dock(p: Props) {
             }}
             onSelect={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart)}
             onKeyDown={onInputKeyDown}
-            placeholder={p.messages.length ? "Ask a follow-up…  ·  @ file  ·  / command" : "Ask about your screen…  ·  @ file  ·  / command"}
+            placeholder="Ask…"
             aria-label="Ask about your screen"
             aria-expanded={showCommandPalette || showFilePicker}
             spellCheck={false}
@@ -663,7 +630,6 @@ export default function Dock(p: Props) {
             type="button"
             onClick={p.onToggleSettings}
             aria-label={p.panel === "settings" ? "Close settings" : "Open settings"}
-            title="Settings · Ctrl+,"
             className={`mb-0.5 relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ${
               p.panel === "settings" ? "text-white" : "text-white/40 hover:bg-white/5 hover:text-white"
             }`}
@@ -678,7 +644,6 @@ export default function Dock(p: Props) {
             disabled={!value.trim() || p.streaming}
             whileTap={reduced ? undefined : { scale: 0.94 }}
             aria-label="Send prompt"
-            title="Send · Enter"
             className={`mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-35 ${
               value.trim() && !p.streaming ? "accent-action" : "text-white/40"
             }`}
@@ -743,9 +708,6 @@ export default function Dock(p: Props) {
               />
             )}
             <div className="snip-hud" onPointerDown={(event) => event.stopPropagation()}>
-              <Crosshair size={14} />
-              <span>Drag to select a screen region</span>
-              <kbd>Esc</kbd>
               <button type="button" onClick={p.onCancelSnip} aria-label="Cancel screenshot selection"><X size={13} /></button>
             </div>
           </motion.div>

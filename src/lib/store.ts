@@ -158,11 +158,16 @@ export const PROVIDERS: ProviderPreset[] = [
 export const inTauri =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+let interactiveSequence = 0;
+
 export interface InitialState {
   settings: Settings;
   thumb: string;
+  background: string;
   view: string;
   shown: boolean;
+  overlay_revision: number;
+  input_sequence: number;
   needs_key: boolean;
 }
 
@@ -171,18 +176,31 @@ export async function getInitialState(): Promise<InitialState> {
     return {
       settings: normalizeSettings(DEFAULT_SETTINGS),
       thumb: "",
+      background: "",
       view: "ask",
       shown: true,
+      overlay_revision: 0,
+      input_sequence: 0,
       needs_key: true,
     };
   }
   try {
     const state = await invoke<InitialState>("get_initial_state");
+    interactiveSequence = Math.max(interactiveSequence, state.input_sequence ?? 0);
     return { ...state, settings: normalizeSettings(state.settings) };
   } catch {
     const settings = await getSettings();
     const needs_key = settings.provider !== "ollama" && !settings.api_key.trim();
-    return { settings, thumb: "", view: "ask", shown: false, needs_key };
+    return {
+      settings,
+      thumb: "",
+      background: "",
+      view: "ask",
+      shown: false,
+      overlay_revision: 0,
+      input_sequence: 0,
+      needs_key,
+    };
   }
 }
 
@@ -266,10 +284,14 @@ export interface InteractiveRect {
   height: number;
 }
 
-export async function setInteractiveRegions(regions: InteractiveRect[]): Promise<void> {
+export async function setInteractiveRegions(
+  regions: InteractiveRect[],
+  overlayRevision: number,
+): Promise<void> {
   if (!inTauri) return;
+  const sequence = ++interactiveSequence;
   try {
-    await invoke("set_interactive_regions", { regions });
+    await invoke("set_interactive_regions", { regions, overlayRevision, sequence });
   } catch (err) {
     console.error("set_interactive_regions error:", err);
   }

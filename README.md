@@ -44,7 +44,7 @@ When running from a cloned checkout, `bash ./install.sh` or `bash ./setup.sh` fa
 - **Plasma:** shortcut registration is version-sensitive. The installer avoids an occupied shortcut and leaves a clear System Settings fallback when it cannot safely register one.
 - **GNOME, Cinnamon, MATE, and Xfce:** shortcuts use their desktop settings and the tray uses one XDG autostart entry.
 
-Config files reached through symlinks or paths the installer cannot safely edit are left alone. Managed drop-ins have a marker, existing configs receive a first-install `.screen-ai-bak` backup, and unsupported configurations get manual instructions instead of speculative edits. GTK layer-shell is not available in every desktop/session (notably GNOME Wayland and X11); Screen AI keeps a normal-window fallback for those environments.
+Config files reached through symlinks or paths the installer cannot safely edit are left alone. Managed drop-ins have a marker, existing configs receive a first-install `.screen-ai-bak` backup, and unsupported configurations get manual instructions instead of speculative edits. GTK layer-shell is not available in every desktop/session (notably GNOME Wayland and X11); Screen AI keeps a normal-window fallback for those environments. On i3/X11 without a detected compositor, it paints the pre-overlay screen capture behind the card as a visual fallback instead of showing a black fullscreen surface.
 
 ---
 
