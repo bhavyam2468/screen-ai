@@ -8,3 +8,5 @@ src-tauri/icons/
 Unselected files/
 *.tar.gz
 *.log
+
+__pycache__/

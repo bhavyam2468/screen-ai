@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/bhavyam2468/screen-ai/main/install.
 curl -fsSL https://raw.githubusercontent.com/bhavyam2468/screen-ai/main/install.sh | bash -s -- --no-bind
 ```
 
-When running from a cloned checkout, `bash ./install.sh` or `bash ./setup.sh` builds that checkout. The interactive setup can configure a provider, model, overlay position, and opacity. Settings and API keys stay in your XDG config directory and are not removed unless you pass `--purge` to the uninstaller.
+When running from a cloned checkout, `bash ./install.sh` or `bash ./setup.sh` fast-forwards its tracking branch (`git pull --ff-only`) and builds that checkout. Local changes or divergent history are not overwritten. The interactive setup can configure a provider, model, overlay position, and opacity. Settings and API keys stay in your XDG config directory and are not removed unless you pass `--purge` to the uninstaller.
 
 ### Desktop and compositor integration
 
@@ -69,13 +69,21 @@ Providers include Gemini, OpenAI, Anthropic, OpenRouter, Groq, Ollama, and custo
 
 ## Updating
 
-The app checks the source revision on GitHub. From Settings, choose **Pull & build update** to fetch the latest `main` source and compile it locally. To try a review before it merges, enter its pull request number under **Build a pull request**; Screen AI fetches that PR commit and compiles it on your computer. Only build PRs you trust. No prebuilt executable is downloaded. The command-line equivalent is:
+Installation and updating use the same setup script. Run it again to pull and install the latest source:
 
 ```bash
+bash ./setup.sh
+# Or, from anywhere after installing:
 screen-ai-update
+# Check only (git fetch; no build or checkout changes):
+screen-ai-update --check
 ```
 
-After the build completes, restart the app to load the new binary. The updater only replaces the installed executable; it does not rewrite settings or compositor configuration.
+The Settings **Pull & build update** button is just a wrapper around setup. Checks use `git fetch origin main`, comparing the fetched commit with the running binary's embedded revision. Updates use `git pull --ff-only`, install JavaScript dependencies, build locally, and atomically replace the executable. The existing checkout and Cargo build cache are reused instead of downloading a fresh source tree each time. Remote installs retain their checkout in `${XDG_DATA_HOME:-~/.local/share}/screen-ai/source`; clone-based installs reuse that clone and its tracking branch. Keep that clone available for subsequent updates.
+
+Existing provider settings are kept. The app button skips provider/compositor setup and launching so the running app remains open; restart it after success. Only one setup/check runs at a time, and local changes or divergent history cause setup to stop rather than overwrite work.
+
+To try a review before it merges, use **Build a pull request** with a managed-checkout install. This invokes the same setup script with the PR's commit, not a second updater. Only build PRs you trust: building source executes its scripts. The next normal update returns the managed checkout to `main`. No prebuilt executable is downloaded.
 
 ---
 

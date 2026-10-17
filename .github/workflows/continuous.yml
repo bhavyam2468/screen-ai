@@ -24,6 +24,9 @@ jobs:
       - name: Check installer shell syntax
         run: bash -n install.sh setup.sh uninstall.sh update.sh
 
+      - name: Test setup Git synchronization
+        run: python3 -m unittest discover -s tests -v
+
       - name: Check whitespace and tracked build output
         run: |
           git diff --check HEAD^ HEAD

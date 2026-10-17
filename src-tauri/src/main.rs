@@ -942,33 +942,20 @@ fn truncate_update_log(text: &str) -> String {
 }
 
 #[tauri::command]
-async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateStatus, String> {
-    let response = state
-        .client
-        .get(format!("{REPO_API}/commits/main"))
-        .header("User-Agent", "screen-ai-source-updater")
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| format!("Could not check GitHub for source updates: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("GitHub returned HTTP {} while checking for updates", response.status()));
+async fn check_for_updates() -> Result<UpdateStatus, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let updater = executable.parent().ok_or("Cannot locate setup wrapper")?.join("screen-ai-update");
+    let output = tokio::process::Command::new("bash")
+        .arg(updater).arg("--check").output().await
+        .map_err(|e| format!("Could not run setup to check for updates: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("Update check failed: {}", String::from_utf8_lossy(&output.stderr)));
     }
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| format!("Could not read GitHub commit information: {e}"))?;
-    let latest_sha = json["sha"]
-        .as_str()
-        .ok_or_else(|| "GitHub did not return the latest source commit SHA".to_string())?
-        .to_string();
-    let latest_message = json["commit"]["message"]
-        .as_str()
-        .unwrap_or("Latest source revision")
-        .lines()
-        .next()
-        .unwrap_or("Latest source revision")
-        .to_string();
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut lines = text.lines();
+    let latest_sha = lines.next().filter(|sha| sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()))
+        .ok_or("Setup did not return a valid commit SHA")?.to_string();
+    let latest_message = lines.next().unwrap_or("Latest source revision").to_string();
     let current_sha = env!("SCREEN_AI_COMMIT").to_string();
     let update_available = env!("SCREEN_AI_DIRTY") == "1"
         || current_sha == "unknown"
@@ -998,8 +985,6 @@ async fn run_source_update(source_ref: &str, label: &str) -> Result<String, Stri
         .arg(&updater)
         .arg("--ref")
         .arg(source_ref)
-        .arg("--install-path")
-        .arg(&install_path)
         .output()
         .await
         .map_err(|e| format!("Could not start the source updater: {e}"))?;

@@ -12,7 +12,7 @@ The local build embeds `v1.<short-sha>` (and a `+dirty` suffix when built from a
 
 ## User update path
 
-The installer places a source updater at `screen-ai-update` and the Settings panel invokes that helper. It fetches the `main` source, runs `npm ci`, builds the frontend and then runs a locked Cargo release build on the user’s machine. The completed executable is staged beside the install path and atomically renamed into place. Settings and compositor config are not changed. The app asks for a restart after success.
+The installer places a thin `screen-ai-update` wrapper alongside the app. Both Settings and this command invoke `setup.sh`, the same path used for initial installation. Checks fetch `origin/main` with Git. Setup fast-forwards the persistent checkout, runs `npm ci`, builds the frontend and runs a locked Cargo release build, reusing the Cargo cache. The completed executable is staged beside the install path and atomically renamed into place. The button skips provider/compositor setup and launch, and asks for a restart after success. Dirty or diverged checkouts are not overwritten.
 
 The helper can also be run directly:
 

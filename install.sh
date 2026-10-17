@@ -15,21 +15,22 @@ CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 SHARE_DIR="$DATA_HOME/screen-ai"
 CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/screen-ai"
 LOG="$(mktemp -t screen-ai-install.XXXXXX.log)"
-SOURCE_DIR=""
-SOURCE_DIR_OWNED=0
-cleanup_source() {
-  if [ "$SOURCE_DIR_OWNED" -eq 1 ] && [ -n "$SOURCE_DIR" ] && [ -d "$SOURCE_DIR" ]; then
-    rm -rf -- "$SOURCE_DIR"
-  fi
-  return 0
-}
-trap cleanup_source EXIT
+SOURCE_DIR="${SCREEN_AI_SOURCE_DIR:-}"
+SOURCE_REF="main"
+CHECK_ONLY=0
+NO_LAUNCH=0
 
 # Source builds are the only install path. --from-source remains accepted for
 # compatibility with older install commands.
 ASSUME_YES=0; FROM_SOURCE=1; NO_DEPS=0; NO_BIND=0; NO_SETUP=0
-for a in "$@"; do
-  case "$a" in
+ORIGINAL_ARGS=("$@")
+while (($#)); do
+  case "$1" in
+    --ref)
+      [ "$#" -ge 2 ] || { echo "--ref needs a value" >&2; exit 2; }
+      SOURCE_REF="$2"; shift ;;
+    --check) CHECK_ONLY=1 ;;
+    --no-launch) NO_LAUNCH=1 ;;
     -y|--yes) ASSUME_YES=1 ;;
     --from-source) FROM_SOURCE=1 ;;
     --no-deps) NO_DEPS=1 ;;
@@ -42,12 +43,17 @@ Usage: install.sh [--yes] [--no-deps] [--no-bind] [--no-setup] [--help]
   --no-deps   Do not install runtime or build dependencies; Rust, Node and npm must already be available
   --no-bind   Do not configure compositor shortcuts or autostart
   --no-setup  Keep existing provider settings and skip first-run setup
+  --no-launch Do not launch the app after installing (used by the app button)
+  --check     Fetch main and print its commit SHA and subject without installing
+  --ref SHA   Build a trusted PR commit in the managed checkout
 
 The installer fetches source and builds Screen AI locally. Run it from a clone
 or pipe install.sh to Bash; installation never downloads a prebuilt app binary.
 EOF
       exit 0 ;;
+    *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
+  shift
 done
 
 case "${LC_ALL:-${LANG:-}}" in *UTF-8*|*utf8*|*UTF8*) ;; *) export LC_ALL=C.UTF-8 ;; esac
@@ -370,23 +376,9 @@ build_from_source() {
   ensure_rust || return 1
   have npm || { echo "npm is required to build the application frontend" >&2; return 1; }
   have node || { echo "Node.js 18 or newer is required" >&2; return 1; }
-  local node_major script_dir
+  local node_major
   node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-  [ "$node_major" -ge 18 ] || { echo "Node.js 18 or newer is required (found $(node --version 2>/dev/null || echo missing))" >&2; return 1; }
-
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P || true)"
-  if [ -n "$script_dir" ] && [ -f "$script_dir/package.json" ] && [ -f "$script_dir/src-tauri/Cargo.toml" ]; then
-    SOURCE_DIR="$script_dir"
-    note "building the checked-out source at $SOURCE_DIR"
-  else
-    mkdir -p "$CACHE_HOME"
-    SOURCE_DIR="$(mktemp -d "$CACHE_HOME/screen-ai-source.XXXXXX")"
-    SOURCE_DIR_OWNED=1
-    # build_from_source runs under spin's background subshell, so install the
-    # cleanup trap there as well as in the main shell.
-    trap cleanup_source EXIT
-    git clone --depth 1 "https://github.com/$REPO.git" "$SOURCE_DIR" || return 1
-  fi
+  [ "$node_major" -ge 18 ] || { echo "Node.js 18 or newer is required" >&2; return 1; }
   (
     set -e
     cd "$SOURCE_DIR"
@@ -426,18 +418,6 @@ get_binary() {
 
 install_update_tool() {
   mkdir -p "$SHARE_DIR" "$BIN_DIR"
-  local src=""
-  [ -n "$SOURCE_DIR" ] && [ -f "$SOURCE_DIR/update.sh" ] && src="$SOURCE_DIR/update.sh"
-  if [ -z "$src" ] && [ -f "${0%/*}/update.sh" ]; then src="${0%/*}/update.sh"; fi
-  if [ -n "$src" ]; then
-    install -m755 "$src" "$SHARE_DIR/update.sh"
-  elif have curl; then
-    curl -fsSL --max-time 20 "https://raw.githubusercontent.com/$REPO/main/update.sh" -o "$SHARE_DIR/update.sh" || return 1
-    chmod 755 "$SHARE_DIR/update.sh"
-  else
-    warn "could not install the source-update helper; update via the installer when needed"
-    return 1
-  fi
   cat >"$BIN_DIR/screen-ai-update" <<EOF
 #!/usr/bin/env bash
 # screen-ai managed wrapper
@@ -447,7 +427,8 @@ XDG_CACHE_HOME_DEFAULT=$(printf '%q' "$CACHE_HOME")
 export XDG_DATA_HOME="\${XDG_DATA_HOME:-\$XDG_DATA_HOME_DEFAULT}"
 export XDG_CONFIG_HOME="\${XDG_CONFIG_HOME:-\$XDG_CONFIG_HOME_DEFAULT}"
 export XDG_CACHE_HOME="\${XDG_CACHE_HOME:-\$XDG_CACHE_HOME_DEFAULT}"
-SCREEN_AI_INSTALL_PATH=$(printf '%q' "$BIN_ABS") exec $(printf '%q' "$SHARE_DIR/update.sh") "\$@"
+export SCREEN_AI_BIN_DIR=$(printf '%q' "$BIN_DIR")
+exec bash $(printf '%q' "$SOURCE_DIR/setup.sh") --yes --no-setup --no-bind --no-launch "\$@"
 EOF
   chmod 755 "$BIN_DIR/screen-ai-update"
   receipt_set UPDATER_WRAPPER "$BIN_DIR/screen-ai-update"
@@ -1557,6 +1538,59 @@ setup_keybinding() {
   install_session_startup
 }
 
+# One persistent checkout and one installer for both installation and updates.
+prepare_source() {
+  command -v git >/dev/null || { echo "git is required" >&2; exit 1; }
+  local script_dir branch
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P || true)"
+  if [ -z "$SOURCE_DIR" ]; then
+    if [ -f "$script_dir/src-tauri/Cargo.toml" ] && [ -e "$script_dir/.git" ]; then
+      SOURCE_DIR="$script_dir"
+    else
+      SOURCE_DIR="$SHARE_DIR/source"
+    fi
+  fi
+  mkdir -p "$SHARE_DIR"
+  # Keep the lock across exec into the newly fetched installer.
+  if [ "${SCREEN_AI_SOURCE_READY:-0}" != 1 ]; then
+    command -v flock >/dev/null || { echo "flock is required" >&2; exit 1; }
+    exec 9>"$SHARE_DIR/setup.lock"
+    flock -n 9 || { echo "Another Screen AI setup/check is running" >&2; exit 1; }
+  fi
+  if [ ! -e "$SOURCE_DIR/.git" ]; then
+    git clone --branch main "https://github.com/$REPO.git" "$SOURCE_DIR" >&2 || exit 1
+  fi
+  if [ "$CHECK_ONLY" -eq 1 ]; then
+    git -C "$SOURCE_DIR" fetch origin main >&2 || exit 1
+    git -C "$SOURCE_DIR" log -1 --format='%H%n%s' FETCH_HEAD
+    exit
+  fi
+  if [ "${SCREEN_AI_SOURCE_READY:-0}" = 1 ]; then return; fi
+  [ -z "$(git -C "$SOURCE_DIR" status --porcelain)" ] || {
+    echo "Checkout has local changes: $SOURCE_DIR. Commit or stash them before running setup." >&2; exit 1;
+  }
+  case "$SOURCE_REF" in
+    main)
+      branch="$(git -C "$SOURCE_DIR" symbolic-ref --quiet --short HEAD || true)"
+      if [ -n "$branch" ]; then
+        git -C "$SOURCE_DIR" pull --ff-only >&2 || exit 1
+      else
+        [ "$SOURCE_DIR" = "$SHARE_DIR/source" ] || {
+          echo "Detached development checkout: check out a tracking branch before running setup" >&2; exit 1;
+        }
+        git -C "$SOURCE_DIR" fetch origin main >&2 || exit 1
+        git -C "$SOURCE_DIR" checkout -B main FETCH_HEAD >&2 || exit 1
+      fi ;;
+    *)
+      [[ "$SOURCE_REF" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "Expected main or a full commit SHA" >&2; exit 2; }
+      [ "$SOURCE_DIR" = "$SHARE_DIR/source" ] || { echo "PR builds require the managed checkout, not a development clone" >&2; exit 1; }
+      git -C "$SOURCE_DIR" fetch origin "$SOURCE_REF" >&2 || exit 1
+      git -C "$SOURCE_DIR" checkout --detach FETCH_HEAD >&2 || exit 1 ;;
+  esac
+  export SCREEN_AI_SOURCE_DIR="$SOURCE_DIR" SCREEN_AI_SOURCE_READY=1
+  exec bash "$SOURCE_DIR/setup.sh" "${ORIGINAL_ARGS[@]}"
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 main() {
   clear 2>/dev/null || true
@@ -1593,7 +1627,6 @@ main() {
 
   step "Installing Screen AI"
   receipt_set BIN_DIR "$BIN_DIR"
-  pkill -x screen-ai 2>/dev/null; sleep 0.3
   get_binary
   ok "installed → $BIN_DIR/screen-ai"
   install_update_tool || warn "source updater could not be installed"
@@ -1606,7 +1639,7 @@ main() {
 
   if [ "$NO_SETUP" -eq 0 ]; then
     step "Setup"
-    if [ -s "$CFG_DIR/settings.json" ] && ask_tty && confirm "Existing settings found — keep them?" y; then ok "keeping $CFG_DIR/settings.json"
+    if [ -s "$CFG_DIR/settings.json" ]; then ok "keeping $CFG_DIR/settings.json"
     else setup_provider; fi
   fi
 
@@ -1616,9 +1649,10 @@ main() {
   fi
 
   step "Launching"
-  if [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+  if [ "$NO_LAUNCH" -eq 0 ] && [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
     (nohup "$BIN_DIR/screen-ai" >/dev/null 2>&1 &) ; sleep 1
     pgrep -x screen-ai >/dev/null && ok "running in the background" || warn "could not start — run: screen-ai"
+  elif [ "$NO_LAUNCH" -eq 1 ]; then note "restart Screen AI to use the new build"
   else note "no display detected — start it from your desktop session"; fi
 
   printf '\n'; rule
@@ -1628,4 +1662,5 @@ main() {
   printf '    %suninstall%s  %sscreen-ai-uninstall%s\n\n' "$BOLD" "$RST" "$DIM" "$RST"
 }
 
+prepare_source
 main

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Compatibility entry point for existing setup.sh instructions.
-# The canonical installer detects the current session, installs dependencies,
-# and builds Screen AI from this checkout when run from the repository.
+# Shared install/update entry point. The installer synchronizes this checkout,
+# installs missing dependencies, builds locally and replaces the installed app.
 set -euo pipefail
 
 APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
