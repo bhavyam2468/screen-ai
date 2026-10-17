@@ -17,6 +17,23 @@ interface Props {
   onRetry: () => void;
 }
 
+/** Models often pad replies with runs of blank lines. Keep at most one blank line between blocks, and never inside code fences. */
+function tidyMarkdown(text: string) {
+  let inFence = false;
+  return text
+    .split("\n")
+    .reduce<string[]>((lines, line) => {
+      if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+      const blank = line.trim() === "";
+      const previousBlank = lines.length > 0 && lines[lines.length - 1].trim() === "";
+      if (blank && !inFence && (previousBlank || lines.length === 0)) return lines;
+      lines.push(line.replace(/\s+$/, ""));
+      return lines;
+    }, [])
+    .join("\n")
+    .trim();
+}
+
 const MD_COMPONENTS: any = {
   h1: ({ node, ...p }: any) => (
     <h1 className="text-[18px] font-bold text-white tracking-tight mt-4 mb-2 pb-1.5 border-b border-white/10" {...p} />
@@ -214,7 +231,7 @@ export default function ChatPanel({ messages, streaming, error, onClose, onRetry
           return (
             <MsgIn key={i} className={isLast && streaming ? "stream-cursor" : ""} reduced={reduced}>
               <ReactMarkdown remarkPlugins={[remarkGfm]} className="md-body" components={MD_COMPONENTS}>
-                {m.text}
+                {tidyMarkdown(m.text)}
               </ReactMarkdown>
               {isLast && error && (
                 <p className="mt-2 text-[12.5px] text-rose-300/90 select-text">{error}</p>

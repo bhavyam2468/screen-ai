@@ -163,6 +163,7 @@ let interactiveSequence = 0;
 export interface InitialState {
   settings: Settings;
   thumb: string;
+  preview: string;
   background: string;
   view: string;
   shown: boolean;
@@ -176,6 +177,7 @@ export async function getInitialState(): Promise<InitialState> {
     return {
       settings: normalizeSettings(DEFAULT_SETTINGS),
       thumb: "",
+      preview: "",
       background: "",
       view: "ask",
       shown: true,
@@ -194,6 +196,7 @@ export async function getInitialState(): Promise<InitialState> {
     return {
       settings,
       thumb: "",
+      preview: "",
       background: "",
       view: "ask",
       shown: false,
@@ -267,9 +270,15 @@ export interface ScreenRect {
   height: number;
 }
 
-export async function cropScreenshot(rect: ScreenRect, viewport: { width: number; height: number }): Promise<string> {
-  if (!inTauri) return "";
-  return await invoke<string>("crop_screenshot", {
+/** A capture: a small thumbnail for the input bar and a larger preview for hover. */
+export interface Shot {
+  thumb: string;
+  preview: string;
+}
+
+export async function cropScreenshot(rect: ScreenRect, viewport: { width: number; height: number }): Promise<Shot> {
+  if (!inTauri) return { thumb: "", preview: "" };
+  return await invoke<Shot>("crop_screenshot", {
     ...rect,
     viewportWidth: viewport.width,
     viewportHeight: viewport.height,
@@ -318,6 +327,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
   return await invoke<UpdateStatus>("check_for_updates");
 }
 
+/** Starts a background update. Progress arrives as `update-progress` events and the result as `update-done`. */
 export async function updateFromSource(): Promise<string> {
   if (!inTauri) throw new Error("Source updates are available in the installed Linux app.");
   return await invoke<string>("update_from_source");
@@ -326,6 +336,30 @@ export async function updateFromSource(): Promise<string> {
 export async function updateFromPr(prNumber: number): Promise<string> {
   if (!inTauri) throw new Error("Pull request builds are available in the installed Linux app.");
   return await invoke<string>("update_from_pr", { prNumber });
+}
+
+export interface UpdateEvent {
+  ok: boolean;
+  message: string;
+}
+
+export interface UpdateStatusSnapshot {
+  running: boolean;
+  last_line: string;
+}
+
+export async function getUpdateStatus(): Promise<UpdateStatusSnapshot> {
+  if (!inTauri) return { running: false, last_line: "" };
+  try {
+    return await invoke<UpdateStatusSnapshot>("get_update_status");
+  } catch {
+    return { running: false, last_line: "" };
+  }
+}
+
+export async function openThemeConfig(): Promise<void> {
+  if (!inTauri) return;
+  await invoke("open_theme_config");
 }
 
 export async function restartApp(): Promise<void> {
@@ -350,17 +384,45 @@ export interface QtPalette {
   tooltip_text: string | null;
 }
 
+/** Non-color knobs from ~/.config/screen-ai/theme.conf. `null` means "use the built-in default". */
+export interface ThemeTokens {
+  config_path: string;
+  radius: number | null;
+  font: string | null;
+  mono: string | null;
+  font_size: number | null;
+  motion_reduced: boolean;
+  speed: number;
+}
+
 export interface SystemTheme {
   dark: boolean;
   accent: string | null;
   palette: QtPalette | null;
+  /** First layer that supplied colors: explicit, matugen, qt, gtk, or builtin. */
+  source: string;
+  tokens: ThemeTokens;
+}
+
+const FALLBACK_TOKENS: ThemeTokens = {
+  config_path: "",
+  radius: null,
+  font: null,
+  mono: null,
+  font_size: null,
+  motion_reduced: false,
+  speed: 1,
+};
+
+export function fallbackSystemTheme(): SystemTheme {
+  return { dark: true, accent: null, palette: null, source: "builtin", tokens: FALLBACK_TOKENS };
 }
 
 export async function getSystemTheme(): Promise<SystemTheme> {
-  if (!inTauri) return { dark: true, accent: null, palette: null };
+  if (!inTauri) return fallbackSystemTheme();
   try {
     return await invoke<SystemTheme>("get_system_theme");
   } catch {
-    return { dark: true, accent: null, palette: null };
+    return fallbackSystemTheme();
   }
 }

@@ -18,11 +18,16 @@ import {
   saveSettings,
   checkForUpdates,
   getSystemTheme,
+  fallbackSystemTheme,
+  openThemeConfig,
+  updateFromSource,
+  UpdateEvent,
   normalizeSettings,
   selectProvider,
   settingsForSave,
   updateProviderProfile,
   SystemTheme,
+  Shot,
 } from "./lib/store";
 
 // Some "free" router models are safety classifiers and only ever say this.
@@ -64,6 +69,8 @@ export default function App() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("model");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [thumb, setThumb] = useState<string | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [modelQuery, setModelQuery] = useState("");
   const [desktopBackground, setDesktopBackground] = useState<string | null>(null);
   const [sessionRevision, setSessionRevision] = useState(0);
   const sessionRevisionRef = useRef<number | null>(null);
@@ -73,7 +80,7 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasUpdate, setHasUpdate] = useState(false);
-  const [sysTheme, setSysTheme] = useState<SystemTheme>({ dark: true, accent: null, palette: null });
+  const [sysTheme, setSysTheme] = useState<SystemTheme>(fallbackSystemTheme);
 
   useEffect(() => {
     getSystemTheme().then(setSysTheme).catch(() => {});
@@ -97,6 +104,7 @@ export default function App() {
 
   const summon = useCallback((p: {
     thumb?: string;
+    preview?: string;
     background?: string;
     view?: string;
     overlay_revision?: number;
@@ -110,6 +118,7 @@ export default function App() {
     });
     getSystemTheme().then(setSysTheme).catch(() => {});
     setThumb(p.thumb || null);
+    setPreview(p.preview || null);
     setDesktopBackground(p.background || null);
     setSessionRevision(p.overlay_revision ?? 0);
     update(() => []);
@@ -136,6 +145,7 @@ export default function App() {
         if (init.shown) {
           summon({
             thumb: init.thumb,
+            preview: init.preview,
             background: init.background,
             view: init.view,
             overlay_revision: init.overlay_revision,
@@ -152,8 +162,16 @@ export default function App() {
     }
     const unsubs: (() => void)[] = [];
     (async () => {
+      unsubs.push(await listen<SystemTheme>("theme-changed", (e) => setSysTheme(e.payload)));
+      unsubs.push(await listen<string>("update-progress", (e) => setCommandNotice(e.payload)));
+      unsubs.push(
+        await listen<UpdateEvent>("update-done", (e) =>
+          setCommandNotice(e.payload.ok ? "Update installed. Restart Screen AI to use it." : e.payload.message)
+        )
+      );
       unsubs.push(await listen<{
         thumb: string;
+        preview: string;
         background: string;
         view: string;
         overlay_revision: number;
@@ -265,7 +283,8 @@ export default function App() {
     }
   }, []);
 
-  const openSettings = (section: SettingsSection = "model") => {
+  const openSettings = (section: SettingsSection = "model", query = "") => {
+    setModelQuery(query);
     setSettingsSection(section);
     setPanel("settings");
   };
@@ -281,6 +300,8 @@ export default function App() {
 
     if (name === "model") {
       if (!args.length) return openSettings("model");
+      // Anything that does not start with a provider name is a model search.
+      if (!providerArg) return openSettings("model", args.join(" "));
       if (providerArg && args.length === 1) {
         const next = selectProvider(current, providerArg.id);
         await persistFromCommand(next);
@@ -345,7 +366,34 @@ export default function App() {
     }
 
     if (name === "update" || name === "updates") {
-      openSettings("updates");
+      if (!inTauri) {
+        setCommandNotice("Updates are available in the installed Linux app.");
+        return;
+      }
+      try {
+        setCommandNotice("Updating in the background…");
+        await updateFromSource();
+      } catch (err) {
+        setCommandNotice(`Update did not start: ${String(err)}`);
+      }
+      return;
+    }
+
+    if (name === "config") {
+      try {
+        await openThemeConfig();
+        setCommandNotice("Opened theme.conf. Changes apply on save.");
+      } catch (err) {
+        setCommandNotice(String(err));
+      }
+      return;
+    }
+
+    if (name === "new") {
+      update(() => []);
+      setError(null);
+      setPanel("none");
+      setCommandNotice("Started a new chat.");
       return;
     }
 
@@ -377,8 +425,11 @@ export default function App() {
       return;
     }
     try {
-      const nextThumb = await cropScreenshot(rect, { width: window.innerWidth, height: window.innerHeight });
-      if (nextThumb) setThumb(nextThumb);
+      const shot: Shot = await cropScreenshot(rect, { width: window.innerWidth, height: window.innerHeight });
+      if (shot.thumb) {
+        setThumb(shot.thumb);
+        setPreview(shot.preview || null);
+      }
     } catch (err) {
       setCommandNotice(`Could not crop screenshot: ${String(err)}`);
     } finally {
@@ -411,6 +462,26 @@ export default function App() {
     const timer = window.setTimeout(() => setCommandNotice(null), 4200);
     return () => window.clearTimeout(timer);
   }, [commandNotice]);
+
+  // theme.conf [shape]/[type]/[motion] knobs become CSS variables. Values not set
+  // in the file fall back to the stylesheet defaults.
+  useEffect(() => {
+    const root = document.documentElement;
+    const t = sysTheme.tokens;
+    const radius = t.radius ?? 18;
+    root.style.setProperty("--radius-card", `${radius}px`);
+    root.style.setProperty("--radius-inner", `${Math.max(4, radius - 8)}px`);
+    root.style.setProperty("--radius-control", `${Math.max(4, radius - 12)}px`);
+    if (t.font) root.style.setProperty("--ui-font", `"${t.font}", "Geist Variable", system-ui, sans-serif`);
+    else root.style.removeProperty("--ui-font");
+    if (t.mono) root.style.setProperty("--ui-mono", `"${t.mono}", ui-monospace, monospace`);
+    else root.style.removeProperty("--ui-mono");
+    if (t.font_size) root.style.setProperty("--ui-size", `${t.font_size}px`);
+    else root.style.removeProperty("--ui-size");
+    root.style.setProperty("--motion-scale", String(t.speed));
+    if (t.motion_reduced) root.dataset.motion = "reduced";
+    else delete root.dataset.motion;
+  }, [sysTheme]);
 
   const qtPalette = settings.theme === "qt" ? sysTheme.palette : null;
   const qtDark = qtPalette?.dark ?? sysTheme.dark;
@@ -512,6 +583,8 @@ export default function App() {
             error={error}
             notice={commandNotice}
             thumb={thumb}
+            preview={preview}
+            modelQuery={modelQuery}
             snipping={snipping}
             settings={settings}
             hasUpdate={hasUpdate}

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -136,6 +137,7 @@ pub struct AppState {
     pub last_prompt: Mutex<String>,
     pub current_thumb: Mutex<String>,
     pub current_background: Mutex<String>,
+    pub current_preview: Mutex<String>,
     pub initial_view: Mutex<String>,
     pub shown: AtomicBool,
     pub layer: AtomicBool,
@@ -143,6 +145,10 @@ pub struct AppState {
     pub input_sequence: AtomicU64,
     pub overlay_revision: AtomicU64,
     pub screenshot_fallback: AtomicBool,
+    /// True while a background source update is running.
+    pub updating: AtomicBool,
+    /// The most recent line printed by the running updater.
+    pub update_last: Mutex<String>,
 }
 
 fn config_path() -> PathBuf {
@@ -238,8 +244,16 @@ fn capture_xcap(full: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-/// Downscale for the vision API + build a tiny data-URL thumbnail for the ask bar.
-fn process_images(full: &PathBuf, send: &PathBuf) -> Result<String, String> {
+/// What the UI needs from one capture: a tiny thumbnail for the input bar and a
+/// larger JPEG that the hover preview can show without looking blurry.
+#[derive(Debug, Clone, Serialize)]
+pub struct Shot {
+    pub thumb: String,
+    pub preview: String,
+}
+
+/// Downscale for the vision API + build the thumbnail and hover preview.
+fn process_images(full: &PathBuf, send: &PathBuf) -> Result<Shot, String> {
     let img = image::open(full).map_err(|e| format!("open shot: {e}"))?;
     let (w, h) = (img.width(), img.height());
 
@@ -269,7 +283,21 @@ fn process_images(full: &PathBuf, send: &PathBuf) -> Result<String, String> {
             .write_to(&mut cur, image::ImageFormat::Png)
             .map_err(|e| format!("thumb encode: {e}"))?;
     }
-    Ok(format!("data:image/png;base64,{}", B64.encode(&buf)))
+    let thumb_url = format!("data:image/png;base64,{}", B64.encode(&buf));
+
+    // Preview: the whole capture, scaled to fit 1200px. JPEG keeps the payload small.
+    let preview_img = img.resize(1200, 1200, image::imageops::FilterType::Triangle);
+    let mut preview_buf: Vec<u8> = Vec::new();
+    {
+        let mut cur = std::io::Cursor::new(&mut preview_buf);
+        image::DynamicImage::ImageRgb8(preview_img.to_rgb8())
+            .write_to(&mut cur, image::ImageFormat::Jpeg)
+            .map_err(|e| format!("preview encode: {e}"))?;
+    }
+    Ok(Shot {
+        thumb: thumb_url,
+        preview: format!("data:image/jpeg;base64,{}", B64.encode(&preview_buf)),
+    })
 }
 
 fn jpeg_data_url(path: &Path) -> Result<String, String> {
@@ -435,7 +463,7 @@ fn crop_screenshot(
     viewport_width: f64,
     viewport_height: f64,
     pixel_ratio: f64,
-) -> Result<String, String> {
+) -> Result<Shot, String> {
     let full = tmp_full();
     let send = tmp_send();
     let image = image::open(&full).map_err(|e| format!("Could not open the current screenshot: {e}"))?;
@@ -461,13 +489,16 @@ fn crop_screenshot(
     let bottom = bottom.min(image_height).max(top + 1);
     let cropped = image.crop_imm(left, top, right - left, bottom - top);
     cropped.save(&full).map_err(|e| format!("Could not crop the screenshot: {e}"))?;
-    let thumbnail = process_images(&full, &send)?;
+    let shot = process_images(&full, &send)?;
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(mut current) = state.current_thumb.lock() {
-            *current = thumbnail.clone();
+            *current = shot.thumb.clone();
+        }
+        if let Ok(mut current) = state.current_preview.lock() {
+            *current = shot.preview.clone();
         }
     }
-    Ok(thumbnail)
+    Ok(shot)
 }
 
 // ─── Overlay window ──────────────────────────────────────────────────────────
@@ -797,7 +828,7 @@ fn summon(app: &AppHandle, view: &str) {
         .map(|state| state.screenshot_fallback.load(Ordering::Relaxed))
         .unwrap_or(false);
     let mut background = String::new();
-    let thumb = match capture_screen(&full) {
+    let shot = match capture_screen(&full) {
         Ok(()) => {
             let processed = process_images(&full, &send);
             if use_background {
@@ -806,17 +837,23 @@ fn summon(app: &AppHandle, view: &str) {
                     Err(error) => eprintln!("screen-ai desktop background unavailable: {error}"),
                 }
             }
-            processed.unwrap_or_default()
+            processed.unwrap_or_else(|error| {
+                eprintln!("screen-ai screenshot processing failed: {error}");
+                Shot { thumb: String::new(), preview: String::new() }
+            })
         }
         Err(error) => {
             eprintln!("screen-ai capture failed: {error}");
-            String::new()
+            Shot { thumb: String::new(), preview: String::new() }
         }
     };
 
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(mut t) = state.current_thumb.lock() {
-            *t = thumb.clone();
+            *t = shot.thumb.clone();
+        }
+        if let Ok(mut p) = state.current_preview.lock() {
+            *p = shot.preview.clone();
         }
         if let Ok(mut image) = state.current_background.lock() {
             *image = background.clone();
@@ -832,7 +869,8 @@ fn summon(app: &AppHandle, view: &str) {
     let _ = window.emit(
         "summon",
         serde_json::json!({
-            "thumb": thumb,
+            "thumb": shot.thumb,
+            "preview": shot.preview,
             "background": background,
             "view": view,
             "overlay_revision": overlay_revision,
@@ -852,6 +890,7 @@ fn show_settings(app: &AppHandle) {
 fn get_initial_state(app: AppHandle, state: State<'_, AppState>) -> serde_json::Value {
     let settings = get_settings();
     let thumb = state.current_thumb.lock().map(|t| t.clone()).unwrap_or_default();
+    let preview = state.current_preview.lock().map(|t| t.clone()).unwrap_or_default();
     let background = if state.screenshot_fallback.load(Ordering::Relaxed) {
         state.current_background.lock().map(|image| image.clone()).unwrap_or_default()
     } else {
@@ -862,6 +901,7 @@ fn get_initial_state(app: AppHandle, state: State<'_, AppState>) -> serde_json::
     serde_json::json!({
         "settings": settings,
         "thumb": thumb,
+        "preview": preview,
         "background": background,
         "view": view,
         "shown": is_shown(&app),
@@ -1459,7 +1499,37 @@ async fn check_for_updates() -> Result<UpdateStatus, String> {
     })
 }
 
-async fn run_source_update(source_ref: &str, label: &str) -> Result<String, String> {
+/// Reads the updater's output line by line: each line is forwarded to the UI as
+/// `update-progress` and kept as the latest status for `get_update_status`.
+async fn pump_update_lines<R>(reader: R, app: AppHandle, tail: Arc<Mutex<VecDeque<String>>>)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+    while let Ok(Some(raw)) = lines.next_line().await {
+        let line = raw.trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(mut recent) = tail.lock() {
+            recent.push_back(line.clone());
+            while recent.len() > 24 {
+                recent.pop_front();
+            }
+        }
+        if let Some(state) = app.try_state::<AppState>() {
+            if let Ok(mut last) = state.update_last.lock() {
+                *last = line.clone();
+            }
+        }
+        let _ = app.emit("update-progress", line);
+    }
+}
+
+/// Runs the source updater to completion. Called from a background task, so
+/// the overlay stays responsive during a multi-minute build.
+async fn run_source_update(app: &AppHandle, source_ref: &str, label: &str) -> Result<String, String> {
     let install_path = std::env::current_exe()
         .map_err(|e| format!("Cannot locate the installed Screen AI executable: {e}"))?;
     let updater = install_path
@@ -1470,20 +1540,38 @@ async fn run_source_update(source_ref: &str, label: &str) -> Result<String, Stri
         return Err("The local source updater is missing. Re-run the Linux installer to install it.".into());
     }
 
-    let output = tokio::process::Command::new("bash")
+    let mut child = tokio::process::Command::new("bash")
         .arg(&updater)
         .arg("--ref")
         .arg(source_ref)
-        .output()
-        .await
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
         .map_err(|e| format!("Could not start the source updater: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let transcript = format!("{stdout}\n{stderr}");
-    if !output.status.success() {
-        let tail = truncate_update_log(&transcript);
+
+    let tail: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+    let mut readers = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        readers.push(tauri::async_runtime::spawn(pump_update_lines(stdout, app.clone(), tail.clone())));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        readers.push(tauri::async_runtime::spawn(pump_update_lines(stderr, app.clone(), tail.clone())));
+    }
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("Source update did not finish: {e}"))?;
+    for reader in readers {
+        let _ = reader.await;
+    }
+
+    if !status.success() {
+        let lines: Vec<String> = tail.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default();
+        let tail = truncate_update_log(&lines.join("\n"));
         return Err(if tail.trim().is_empty() {
-            format!("Source update failed with {}", output.status)
+            format!("Source update failed with {status}")
         } else {
             format!("Source update failed: {tail}")
         });
@@ -1491,13 +1579,63 @@ async fn run_source_update(source_ref: &str, label: &str) -> Result<String, Stri
     Ok(format!("Built {label} from GitHub source and installed at {}", install_path.display()))
 }
 
-#[tauri::command]
-async fn update_from_source() -> Result<String, String> {
-    run_source_update("main", "latest main").await
+/// Starts a source update in the background and returns immediately. Progress
+/// arrives as `update-progress`; the outcome arrives once as `update-done`.
+fn begin_update(app: &AppHandle, source_ref: String, label: String) -> Result<String, String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "Screen AI is still starting; try again in a moment.".to_string())?;
+    if state.updating.swap(true, Ordering::SeqCst) {
+        return Err("An update is already running.".into());
+    }
+    if let Ok(mut last) = state.update_last.lock() {
+        last.clear();
+    }
+
+    let owner = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = run_source_update(&owner, &source_ref, &label).await;
+        if let Some(state) = owner.try_state::<AppState>() {
+            state.updating.store(false, Ordering::SeqCst);
+        }
+        let payload = match result {
+            Ok(message) => serde_json::json!({ "ok": true, "message": message }),
+            Err(message) => serde_json::json!({ "ok": false, "message": message }),
+        };
+        let _ = owner.emit("update-done", payload);
+    });
+    Ok("Updating in the background".into())
 }
 
 #[tauri::command]
-async fn update_from_pr(state: State<'_, AppState>, pr_number: u64) -> Result<String, String> {
+fn update_from_source(app: AppHandle) -> Result<String, String> {
+    begin_update(&app, "main".into(), "latest main".into())
+}
+
+#[tauri::command]
+fn get_update_status(state: State<'_, AppState>) -> serde_json::Value {
+    serde_json::json!({
+        "running": state.updating.load(Ordering::SeqCst),
+        "last_line": state.update_last.lock().map(|line| line.clone()).unwrap_or_default(),
+    })
+}
+
+#[tauri::command]
+fn open_theme_config() -> Result<(), String> {
+    let path = theme::theme_config_path();
+    theme::ensure_theme_config();
+    std::process::Command::new("xdg-open")
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Could not open {} ({e}). Edit it with your editor.", path.display()))
+}
+
+#[tauri::command]
+async fn update_from_pr(app: AppHandle, state: State<'_, AppState>, pr_number: u64) -> Result<String, String> {
     if pr_number == 0 {
         return Err("Enter a valid Screen AI pull request number.".into());
     }
@@ -1527,7 +1665,7 @@ async fn update_from_pr(state: State<'_, AppState>, pr_number: u64) -> Result<St
         .ok_or_else(|| format!("GitHub did not return a valid source commit for pull request #{pr_number}"))?;
 
     let label = format!("pull request #{pr_number}");
-    run_source_update(head_sha, &label).await
+    begin_update(&app, head_sha.to_string(), label)
 }
 
 #[tauri::command]
@@ -1677,6 +1815,7 @@ fn main() {
             last_prompt: Mutex::new(String::new()),
             current_thumb: Mutex::new(String::new()),
             current_background: Mutex::new(String::new()),
+            current_preview: Mutex::new(String::new()),
             initial_view: Mutex::new("ask".to_string()),
             shown: AtomicBool::new(false),
             layer: AtomicBool::new(false),
@@ -1684,9 +1823,18 @@ fn main() {
             input_sequence: AtomicU64::new(0),
             overlay_revision: AtomicU64::new(0),
             screenshot_fallback: AtomicBool::new(screenshot_fallback),
+            updating: AtomicBool::new(false),
+            update_last: Mutex::new(String::new()),
         })
         .setup(|app| {
             init_layer_shell(app.handle());
+            // theme.conf is created once; afterwards the watcher keeps the overlay
+            // in sync with Matugen/Qt/GTK changes, even while it is hidden.
+            theme::ensure_theme_config();
+            let theme_owner = app.handle().clone();
+            theme::spawn_watcher(move |next| {
+                let _ = theme_owner.emit("theme-changed", next);
+            });
             // Tray: click toggles, menu for settings/quit.
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -1779,8 +1927,10 @@ fn main() {
             check_for_updates,
             update_from_source,
             update_from_pr,
+            get_update_status,
             restart_app,
-            get_system_theme
+            get_system_theme,
+            open_theme_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running screen-ai");
