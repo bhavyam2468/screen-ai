@@ -19,13 +19,18 @@ body {
   user-select: none;
 }
 
-* {
-  outline: none !important;
+*:focus {
+  outline: none;
 }
 
 :focus-visible {
-  outline: 2px solid var(--focus-ring) !important;
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+.dock-textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 /* thin scrollbars */
@@ -258,13 +263,10 @@ body {
   color: var(--sel-fg);
 }
 
-/* card focus glow (follows keyboard focus into the overlay) */
+/* Focus rings belong to the actual button/tab, not a second box around an input
+   that is already inside the card's single outer border. */
 .dock-card {
-  transition: border-color 0.25s ease, box-shadow 0.25s ease;
-}
-.dock-card:focus-within {
-  border-color: var(--focus-ring);
-  box-shadow: 0 0 0 1px var(--focus-ring), 0 12px 48px -12px var(--focus-glow);
+  transform-origin: bottom center;
 }
 
 /* ══════════════ dark-theme surface and border remaps ══════════════ */
@@ -488,3 +490,296 @@ body {
 :root[data-palette="qt"] [class~="border-white/15"] { border-color: rgba(var(--qt-window-text-rgb), 0.15); }
 :root[data-palette="qt"] [class~="border-white/10"] { border-color: rgba(var(--qt-window-text-rgb), 0.1); }
 :root[data-palette="qt"] [class~="accent-white"] { accent-color: var(--qt-highlight); }
+
+/* The composer/command palette is the primary surface: one input, with only the
+   active affordances and the single card boundary visible. */
+.dock-inputbar {
+  min-height: 54px;
+}
+.dock-textarea {
+  max-height: 116px;
+  overflow-y: hidden;
+  line-height: 1.45;
+  user-select: text;
+  -webkit-user-select: text;
+  caret-color: var(--accent);
+  transition: height 0.12s ease-out;
+}
+.dock-textarea::placeholder {
+  color: var(--fg-mute);
+}
+.dock-textarea:focus,
+.dock-textarea:focus-visible {
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
+.shot-button {
+  cursor: pointer;
+}
+.shot-hover {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: white;
+  background: rgba(9, 15, 24, 0.58);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+.shot-button:hover .shot-hover,
+.shot-button:focus-visible .shot-hover {
+  opacity: 1;
+}
+
+kbd {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 2px 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: rgba(var(--window-rgb), 0.72);
+  color: var(--fg-mute);
+  font: 10px/1 "Geist Mono Variable", "Geist Mono", ui-monospace, monospace;
+  white-space: nowrap;
+}
+
+.omnibox-panel {
+  overflow: hidden;
+  border-bottom: 1px solid var(--border-soft);
+  background: rgba(var(--window-rgb), 0.97);
+}
+.omnibox-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 35px;
+  padding: 8px 14px 5px;
+  color: var(--fg-mute);
+  font-size: 10.5px;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+.omnibox-heading-icon,
+.omnibox-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--accent);
+}
+.omnibox-heading-title {
+  color: var(--fg-dim);
+  font-weight: 650;
+}
+.omnibox-heading-hint {
+  font-size: 9.5px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  opacity: 0.72;
+}
+.omnibox-heading-spacer {
+  flex: 1;
+}
+.omnibox-heading kbd + kbd {
+  margin-left: -3px;
+}
+.omnibox-list {
+  max-height: min(280px, 38vh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 3px 7px 7px;
+}
+.omnibox-row {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  color: var(--fg-dim);
+  text-align: left;
+  transition: background-color 0.13s ease, color 0.13s ease;
+  animation: omnibox-row-in 0.15s ease both;
+}
+.omnibox-row:nth-child(2) { animation-delay: 12ms; }
+.omnibox-row:nth-child(3) { animation-delay: 24ms; }
+.omnibox-row:nth-child(4) { animation-delay: 36ms; }
+.omnibox-row:nth-child(5) { animation-delay: 48ms; }
+@keyframes omnibox-row-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.omnibox-row:hover,
+.omnibox-row.is-active,
+.omnibox-row[aria-selected="true"] {
+  background: rgba(var(--accent-rgb), 0.11);
+  color: var(--fg-strong);
+}
+.omnibox-row.is-active .omnibox-icon,
+.omnibox-row[aria-selected="true"] .omnibox-icon {
+  color: var(--accent);
+}
+.omnibox-label {
+  flex: none;
+  max-width: 38%;
+  overflow: hidden;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.omnibox-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-mute);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.omnibox-more {
+  flex: none;
+  color: var(--fg-mute);
+}
+.omnibox-update-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+  background: #f5b942;
+}
+.omnibox-empty {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--fg-mute);
+  font-size: 11px;
+}
+.omnibox-foot {
+  display: flex;
+  min-height: 27px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 14px 8px;
+  color: var(--fg-mute);
+  font-size: 9.5px;
+}
+.omnibox-foot > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.omnibox-foot kbd {
+  min-height: 16px;
+  font-size: 9px;
+}
+.dock-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--fg-dim);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.dock-notice svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+.dock-notice span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Snipping temporarily gives the transparent full-screen overlay an input region.
+   The crosshair and selection rectangle are rendered over the screenshot underneath. */
+.screen-snipping {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
+}
+.snip-shade {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: rgba(5, 9, 16, 0.25);
+}
+.snip-selection {
+  position: fixed;
+  z-index: 1;
+  border: 2px solid var(--accent);
+  border-radius: 3px;
+  background: rgba(var(--accent-rgb), 0.07);
+  box-shadow: 0 0 0 9999px rgba(5, 9, 16, 0.26), 0 0 0 1px rgba(255, 255, 255, 0.38);
+  pointer-events: none;
+}
+.snip-hud {
+  position: fixed;
+  z-index: 2;
+  top: 18px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  padding: 5px 8px 5px 12px;
+  transform: translateX(-50%);
+  border: 1px solid var(--border-strong);
+  border-radius: 11px;
+  background: rgba(var(--window-rgb), 0.97);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
+  color: var(--fg);
+  cursor: default;
+  font-size: 11px;
+  backdrop-filter: blur(12px);
+}
+.snip-hud > svg {
+  color: var(--accent);
+}
+.snip-hud > button {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border-radius: 7px;
+  color: var(--fg-mute);
+  transition: color 0.14s ease, background-color 0.14s ease;
+}
+.snip-hud > button:hover {
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--fg-strong);
+}
+
+.settings-panel .settings-body {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.settings-panel input:focus-visible,
+.settings-panel textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .omnibox-row {
+    animation: none;
+  }
+}
