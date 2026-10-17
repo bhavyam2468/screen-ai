@@ -35,7 +35,7 @@ export default function App() {
     getSystemTheme().then(setSysTheme).catch(() => {});
     checkForUpdates()
       .then((res) => {
-        if (res.has_update) setHasUpdate(true);
+        if (res.stable) setHasUpdate(true);
       })
       .catch(() => {});
   }, []);
@@ -194,15 +194,8 @@ export default function App() {
       ? "items-end pr-6"
       : "items-center";
 
-  const fontClass =
-    settings.font_family === "jetbrains-mono"
-      ? "font-mono"
-      : settings.font_family === "system"
-      ? "font-sans"
-      : "font-serif";
-
   return (
-    <div className={`fixed inset-0 flex flex-col justify-end pb-6 pointer-events-none ${align} ${fontClass}`}>
+    <div className={`fixed inset-0 flex flex-col justify-end pb-6 pointer-events-none ${align}`}>
       <AnimatePresence onExitComplete={() => overlayHidden()}>
         {visible && (
           <Dock

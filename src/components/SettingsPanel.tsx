@@ -19,14 +19,14 @@ import {
   Settings,
   PROVIDERS,
   ReplyPosition,
-  FontFamily,
   ThemeMode,
   quitApp,
   fetchModels,
   checkForUpdates,
   installUpdate,
   restartApp,
-  UpdateInfo,
+  UpdateOffer,
+  UpdateStatus,
 } from "../lib/store";
 
 interface Props {
@@ -41,12 +41,6 @@ const POSITIONS: { id: ReplyPosition; icon: typeof AlignStartVertical; label: st
   { id: "bottom-right", icon: AlignEndVertical, label: "Right" },
 ];
 
-const FONTS: { id: FontFamily; label: string; sub: string }[] = [
-  { id: "libron", label: "Libron", sub: "Editorial Serif" },
-  { id: "jetbrains-mono", label: "JetBrains", sub: "Technical Mono" },
-  { id: "system", label: "System", sub: "Modern Sans" },
-];
-
 const THEMES: { id: ThemeMode; icon: typeof Moon; label: string }[] = [
   { id: "auto", icon: SunMoon, label: "Auto" },
   { id: "dark", icon: Moon, label: "Dark" },
@@ -58,7 +52,91 @@ const NOT_CHAT = /guard|moderat|safety|shield|classif/i;
 
 const LABEL = "text-[10px] uppercase tracking-[0.2em] text-white/40 mb-1.5 font-semibold";
 const FIELD =
-  "w-full rounded-lg bg-neutral-900 border border-white/10 px-3 py-2 text-[13px] placeholder:text-white/25 text-white focus:border-white/30 transition-colors";
+  "w-full rounded-lg bg-neutral-800 border border-white/10 px-3 py-2 text-[13px] placeholder:text-white/25 text-white focus:border-white/30 transition-colors";
+
+function ago(unix: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - unix);
+  if (s < 90) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+function UpdateCard({
+  offer,
+  tone,
+  busy,
+  working,
+  done,
+  onUpdate,
+  onRestart,
+  error,
+}: {
+  offer: UpdateOffer;
+  tone: "stable" | "beta";
+  busy: boolean;
+  working: boolean;
+  done: boolean;
+  onUpdate: () => void;
+  onRestart: () => void;
+  error: string | null;
+}) {
+  const beta = tone === "beta";
+  const [subject, ...rest] = offer.changelog.split("\n");
+  const body = rest.join("\n").trim();
+  return (
+    <div
+      className={`mt-2.5 p-3 rounded-lg bg-neutral-900 border space-y-2 ${
+        beta ? "border-violet-400/30" : "border-amber-500/30"
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[12.5px] font-semibold text-white font-mono">{offer.version}</span>
+        <span className="text-[10px] text-white/40 shrink-0">
+          {beta && <span className="text-violet-300 font-mono">{offer.branch} · </span>}
+          {ago(offer.committed_at)}
+        </span>
+      </div>
+      {subject && <p className="text-[12px] font-medium text-white/85 leading-snug">{subject}</p>}
+      {body && (
+        <p className="text-[11px] text-white/60 line-clamp-3 leading-relaxed whitespace-pre-wrap">
+          {body}
+        </p>
+      )}
+      {done ? (
+        <button
+          type="button"
+          onClick={onRestart}
+          className="w-full mt-1 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors"
+        >
+          <RefreshCw size={12} /> Restart App to Apply
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={onUpdate}
+          disabled={busy}
+          className="w-full mt-1 py-1.5 rounded-md bg-white hover:bg-neutral-200 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+        >
+          {working ? (
+            <>
+              <RefreshCw size={12} className="animate-spin" />
+              <span>Downloading & Installing…</span>
+            </>
+          ) : (
+            <>
+              <Download size={12} />
+              <span>{beta ? `Try beta ${offer.version}` : `Update to ${offer.version}`}</span>
+            </>
+          )}
+        </button>
+      )}
+      {error && <p className="text-[11px] text-rose-400 mt-1">{error}</p>}
+    </div>
+  );
+}
 
 export default function SettingsPanel({ settings, onSave, onClose }: Props) {
   const [draft, setDraft] = useState<Settings>({ ...settings });
@@ -69,8 +147,8 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
   const [filter, setFilter] = useState("");
 
   const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [updating, setUpdating] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updatingChannel, setUpdatingChannel] = useState<"stable" | "beta" | null>(null);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateSuccess, setUpdateSuccess] = useState(false);
 
@@ -83,7 +161,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
     setUpdateError(null);
     try {
       const info = await checkForUpdates();
-      setUpdateInfo(info);
+      setUpdateStatus(info);
     } catch (err) {
       setUpdateError(String(err));
     } finally {
@@ -91,17 +169,17 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
     }
   };
 
-  const triggerUpdate = async () => {
-    if (!updateInfo?.download_url) return;
-    setUpdating(true);
+  const triggerUpdate = async (offer: UpdateOffer, channel: "stable" | "beta") => {
+    if (!offer?.download_url) return;
+    setUpdatingChannel(channel);
     setUpdateError(null);
     try {
-      await installUpdate(updateInfo.download_url, updateInfo.checksum_url ?? "");
+      await installUpdate(offer.download_url, offer.checksum_url ?? "");
       setUpdateSuccess(true);
     } catch (err) {
       setUpdateError(String(err));
     } finally {
-      setUpdating(false);
+      setUpdatingChannel(null);
     }
   };
 
@@ -175,7 +253,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
                 className={`px-3 py-1.5 rounded-lg text-[12px] border transition-colors ${
                   draft.provider === p.id
                     ? "bg-white text-black font-semibold border-white"
-                    : "bg-neutral-900 border-white/10 text-white/60 hover:text-white hover:bg-neutral-800"
+                    : "bg-neutral-800 border-white/10 text-white/60 hover:text-white hover:bg-neutral-700"
                 }`}
               >
                 {p.label}
@@ -187,7 +265,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
         {preset.needsKey && (
           <div>
             <p className={LABEL}>API Key</p>
-            <div className="flex items-center gap-2 rounded-lg bg-neutral-900 border border-white/10 px-3 py-2 focus-within:border-white/30 transition-colors">
+            <div className="flex items-center gap-2 rounded-lg bg-neutral-800 border border-white/10 px-3 py-2 focus-within:border-white/30 transition-colors">
               <input
                 type={showKey ? "text" : "password"}
                 value={draft.api_key}
@@ -222,7 +300,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
             <button
               onClick={doFetch}
               disabled={fetching}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-neutral-900 hover:bg-neutral-800 border border-white/15 text-[11px] text-white/70 hover:text-white transition-colors"
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-neutral-800 hover:bg-neutral-700 border border-white/15 text-[11px] text-white/70 hover:text-white transition-colors"
             >
               <RefreshCw size={11} className={fetching ? "animate-spin" : ""} />
               {fetching ? "Fetching…" : "Fetch Models"}
@@ -241,8 +319,8 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
             </p>
           )}
           {fetched.length > 0 && (
-            <div className="rounded-lg bg-neutral-950 border border-white/10 p-2 space-y-1.5">
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-neutral-900 border border-white/10">
+            <div className="rounded-lg bg-neutral-900 border border-white/10 p-2 space-y-1.5">
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-neutral-800 border border-white/10">
                 <Search size={12} className="text-white/30" />
                 <input
                   value={filter}
@@ -260,7 +338,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
                     className={`w-full text-left px-2.5 py-1.5 rounded-md text-[12px] transition-colors truncate block ${
                       draft.model === m
                         ? "bg-white text-black font-semibold"
-                        : "text-white/60 hover:text-white hover:bg-neutral-900"
+                        : "text-white/60 hover:text-white hover:bg-neutral-800"
                     }`}
                   >
                     {m}
@@ -283,7 +361,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
             step={1}
             value={draft.bg_opacity ?? 100}
             onChange={(e) => setDraft({ ...draft, bg_opacity: Number(e.target.value) })}
-            className="w-full h-1.5 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-white"
+            className="w-full h-1.5 bg-neutral-700 rounded-lg appearance-none cursor-pointer accent-white"
           />
         </div>
 
@@ -297,31 +375,11 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
                 className={`py-2 rounded-lg border flex flex-col items-center justify-center gap-1 transition-colors ${
                   draft.position === id
                     ? "bg-white text-black font-semibold border-white"
-                    : "bg-neutral-900 border-white/10 text-white/40 hover:text-white hover:bg-neutral-800"
+                    : "bg-neutral-800 border-white/10 text-white/40 hover:text-white hover:bg-neutral-700"
                 }`}
               >
                 <Icon size={16} />
                 <span className="text-[10.5px]">{label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <p className={LABEL}>Typography</p>
-          <div className="grid grid-cols-3 gap-2">
-            {FONTS.map(({ id, label, sub }) => (
-              <button
-                key={id}
-                onClick={() => setDraft({ ...draft, font_family: id })}
-                className={`py-2 px-1 rounded-lg border flex flex-col items-center justify-center gap-0.5 transition-colors ${
-                  (draft.font_family ?? "libron") === id
-                    ? "bg-white text-black font-semibold border-white"
-                    : "bg-neutral-900 border-white/10 text-white/40 hover:text-white hover:bg-neutral-800"
-                }`}
-              >
-                <span className="text-[11.5px] font-medium leading-none">{label}</span>
-                <span className="text-[9.5px] opacity-70 leading-tight truncate">{sub}</span>
               </button>
             ))}
           </div>
@@ -337,7 +395,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
                 className={`py-2 rounded-lg border flex flex-col items-center justify-center gap-1 transition-colors ${
                   (draft.theme ?? "auto") === id
                     ? "bg-white text-black font-semibold border-white"
-                    : "bg-neutral-900 border-white/10 text-white/40 hover:text-white hover:bg-neutral-800"
+                    : "bg-neutral-800 border-white/10 text-white/40 hover:text-white hover:bg-neutral-700"
                 }`}
               >
                 <Icon size={16} />
@@ -352,10 +410,16 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
             <div>
               <p className={LABEL}>Updates</p>
               <div className="flex items-center gap-2">
-                <span className="text-[12px] text-white/90 font-mono">v{updateInfo?.current_version || "0.1.0"}</span>
-                {updateInfo?.has_update ? (
+                <span className="text-[12px] text-white/90 font-mono">
+                  {updateStatus?.current_version || "v1.local"}
+                </span>
+                {updateStatus?.stable ? (
                   <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                    Update available
+                    Stable update
+                  </span>
+                ) : updateStatus?.beta ? (
+                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-violet-400/10 text-violet-300 border border-violet-400/30">
+                    Beta available
                   </span>
                 ) : (
                   <span className="px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-white/50 border border-white/10">
@@ -367,61 +431,40 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
             <button
               type="button"
               onClick={checkUpdates}
-              disabled={checkingUpdate || updating}
-              className="px-2.5 py-1.5 rounded-lg bg-neutral-900 border border-white/10 hover:border-white/25 text-[11px] text-white/70 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              disabled={checkingUpdate || updatingChannel !== null}
+              className="px-2.5 py-1.5 rounded-lg bg-neutral-800 border border-white/10 hover:border-white/25 text-[11px] text-white/70 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50"
             >
               <RefreshCw size={11} className={checkingUpdate ? "animate-spin text-white" : ""} />
               <span>{checkingUpdate ? "Checking…" : "Check now"}</span>
             </button>
           </div>
 
-          {updateInfo?.has_update && (
-            <div className="mt-2.5 p-3 rounded-lg bg-neutral-950 border border-amber-500/30 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-[12.5px] font-semibold text-white">
-                  Release {updateInfo.latest_version}
-                </span>
-                <span className="text-[10px] text-white/40">GitHub Release</span>
-              </div>
-              {updateInfo.release_notes && (
-                <p className="text-[11px] text-white/60 line-clamp-3 leading-relaxed whitespace-pre-wrap font-sans">
-                  {updateInfo.release_notes.replace(/###/g, "").trim()}
-                </p>
-              )}
-
-              {updateSuccess ? (
-                <button
-                  type="button"
-                  onClick={doRestart}
-                  className="w-full mt-1 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors"
-                >
-                  <RefreshCw size={12} /> Restart App to Apply
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={triggerUpdate}
-                  disabled={updating}
-                  className="w-full mt-1 py-1.5 rounded-md bg-white hover:bg-neutral-200 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
-                >
-                  {updating ? (
-                    <>
-                      <RefreshCw size={12} className="animate-spin" />
-                      <span>Downloading & Installing…</span>
-                    </>
-                  ) : (
-                    <>
-                      <Download size={12} />
-                      <span>Update to {updateInfo.latest_version}</span>
-                    </>
-                  )}
-                </button>
-              )}
-
-              {updateError && (
-                <p className="text-[11px] text-rose-400 mt-1">{updateError}</p>
-              )}
-            </div>
+          {updateStatus?.stable && (
+            <UpdateCard
+              offer={updateStatus.stable}
+              tone="stable"
+              busy={updatingChannel !== null}
+              working={updatingChannel === "stable"}
+              done={updateSuccess}
+              onUpdate={() => updateStatus.stable && triggerUpdate(updateStatus.stable, "stable")}
+              onRestart={doRestart}
+              error={updateError}
+            />
+          )}
+          {updateStatus?.beta && (
+            <UpdateCard
+              offer={updateStatus.beta}
+              tone="beta"
+              busy={updatingChannel !== null}
+              working={updatingChannel === "beta"}
+              done={updateSuccess}
+              onUpdate={() => updateStatus.beta && triggerUpdate(updateStatus.beta, "beta")}
+              onRestart={doRestart}
+              error={updateError}
+            />
+          )}
+          {updateError && !updateStatus?.stable && !updateStatus?.beta && (
+            <p className="text-[11px] text-rose-400 mt-2">{updateError}</p>
           )}
         </div>
       </div>
@@ -432,7 +475,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
           className={`w-full py-2 rounded-lg text-[13px] flex items-center justify-center gap-2 transition-colors ${
             dirty
               ? "bg-white text-black font-semibold hover:bg-neutral-200"
-              : "bg-neutral-900 text-white/50 border border-white/10 hover:text-white"
+              : "bg-neutral-800 text-white/50 border border-white/10 hover:text-white"
           }`}
         >
           <Check size={14} /> {dirty ? "Save" : "Done"}

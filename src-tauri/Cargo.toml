@@ -1,6 +1,6 @@
 [package]
 name = "screen-ai"
-version = "0.2.0"
+version = "1.0.0"
 description = "Invoke an AI overlay on your screen — screenshot + prompt, streaming reply bubble."
 authors = ["screen-ai"]
 edition = "2021"
@@ -21,7 +21,6 @@ base64 = "0.22"
 image = "0.25"
 xcap = "0.4"
 dirs = "5"
-semver = "1"
 sha2 = "0.10"
 # NOTE: gtk/gdk/cairo/gtk-layer-shell MUST stay on 0.18 — the same major wry/tao
 # link (Cargo.lock pins a single gtk 0.18.x). A second GTK major = subtle breakage.

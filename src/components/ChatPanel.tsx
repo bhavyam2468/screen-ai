@@ -64,7 +64,7 @@ const MD_COMPONENTS: any = {
     </div>
   ),
   thead: ({ node, ...p }: any) => (
-    <thead className="bg-neutral-900 text-white font-semibold" {...p} />
+    <thead className="bg-neutral-800 text-white font-semibold" {...p} />
   ),
   th: ({ node, ...p }: any) => (
     <th className="px-3 py-1.5 text-left font-bold border-b border-r border-white/15 last:border-r-0" {...p} />
@@ -73,11 +73,11 @@ const MD_COMPONENTS: any = {
     <td className="px-3 py-1.5 border-t border-r border-white/10 last:border-r-0 text-white/80" {...p} />
   ),
   pre: ({ node, ...p }: any) => (
-    <pre className="my-2 p-3 rounded-lg bg-neutral-950 border border-white/15 overflow-x-auto text-[12px] leading-relaxed text-white/90 font-mono" {...p} />
+    <pre className="my-2 p-3 rounded-lg bg-neutral-900 border border-white/15 overflow-x-auto text-[12px] leading-relaxed text-white/90 font-mono" {...p} />
   ),
   code: ({ node, inline, className, ...p }: any) =>
     inline ? (
-      <code className="px-1.5 py-0.5 rounded bg-neutral-900 border border-white/15 text-[11.5px] text-white/95 font-mono" {...p} />
+      <code className="px-1.5 py-0.5 rounded bg-neutral-800 border border-white/15 text-[11.5px] text-white/95 font-mono" {...p} />
     ) : (
       <code className={`font-mono ${className ?? ""}`} {...p} />
     ),
@@ -87,7 +87,7 @@ const MD_COMPONENTS: any = {
     <blockquote className="border-l-2 border-white/40 pl-3 my-2 text-white/75 italic" {...p} />
   ),
   a: ({ node, ...p }: any) => (
-    <a className="text-cyan-400 underline underline-offset-2 hover:text-cyan-300 transition-colors" target="_blank" rel="noreferrer" {...p} />
+    <a className="md-link underline underline-offset-2 transition-colors" target="_blank" rel="noreferrer" {...p} />
   ),
 };
 
@@ -207,7 +207,7 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
           if (m.role === "user") {
             return (
               <MsgIn key={i} className="flex justify-end" reduced={reduced}>
-                <div className="max-w-[85%] rounded-xl bg-neutral-900 border border-white/10 px-3 py-1.5 text-[13px] text-white/90 select-text break-words">
+                <div className="max-w-[85%] rounded-xl bg-neutral-800 border border-white/10 px-3 py-1.5 text-[13px] text-white/90 select-text break-words">
                   {m.text}
                 </div>
               </MsgIn>
@@ -249,7 +249,7 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
             animate={{ opacity: 1, y: 0, x: "-50%" }}
             exit={{ opacity: 0, y: 8, x: "-50%" }}
             transition={{ duration: reduced ? 0 : 0.18 }}
-            className="absolute bottom-2 left-1/2 w-7 h-7 rounded-full bg-neutral-900 border border-white/15 text-white/70 hover:text-white shadow-lg flex items-center justify-center"
+            className="absolute bottom-2 left-1/2 w-7 h-7 rounded-full bg-neutral-800 border border-white/15 text-white/70 hover:text-white shadow-lg flex items-center justify-center"
           >
             <ArrowDown size={13} />
           </motion.button>

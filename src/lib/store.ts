@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type ReplyPosition = "bottom-right" | "bottom-left" | "bottom-center";
-export type FontFamily = "libron" | "jetbrains-mono" | "system";
 export type ThemeMode = "auto" | "dark" | "light";
 
 export interface Settings {
@@ -12,7 +11,6 @@ export interface Settings {
   position: ReplyPosition;
   max_tokens: number;
   bg_opacity: number;
-  font_family: FontFamily;
   theme: ThemeMode;
 }
 
@@ -24,7 +22,6 @@ export const DEFAULT_SETTINGS: Settings = {
   position: "bottom-right",
   max_tokens: 800,
   bg_opacity: 100,
-  font_family: "libron",
   theme: "auto",
 };
 
@@ -167,29 +164,28 @@ export async function setInteractiveRegions(regions: InteractiveRect[]): Promise
   }
 }
 
-export interface UpdateInfo {
-  current_version: string;
-  latest_version: string;
-  has_update: boolean;
-  release_notes: string;
+export interface UpdateOffer {
+  version: string;
+  sha: string;
+  committed_at: number;
+  branch: string;
+  changelog: string;
   download_url: string;
   checksum_url: string;
-  published_at: string;
 }
 
-export async function checkForUpdates(): Promise<UpdateInfo> {
+export interface UpdateStatus {
+  current_version: string;
+  current_sha: string;
+  stable: UpdateOffer | null;
+  beta: UpdateOffer | null;
+}
+
+export async function checkForUpdates(): Promise<UpdateStatus> {
   if (!inTauri) {
-    return {
-      current_version: "0.1.0",
-      latest_version: "v0.1.0",
-      has_update: false,
-      release_notes: "",
-      download_url: "",
-      checksum_url: "",
-      published_at: "",
-    };
+    return { current_version: "v1.local", current_sha: "local", stable: null, beta: null };
   }
-  return await invoke<UpdateInfo>("check_for_updates");
+  return await invoke<UpdateStatus>("check_for_updates");
 }
 
 export async function installUpdate(downloadUrl: string, checksumUrl: string): Promise<string> {

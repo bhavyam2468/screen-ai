@@ -1,31 +1,15 @@
 @font-face {
-  font-family: 'Libron';
-  src: url('./fonts/Libron-Regular.woff2') format('woff2');
-  font-weight: 400;
+  font-family: 'Plex Sans';
+  src: url('./fonts/plex-sans.woff2') format('woff2');
+  font-weight: 100 700;
   font-style: normal;
   font-display: swap;
 }
 
 @font-face {
-  font-family: 'Libron';
-  src: url('./fonts/Libron-Bold.woff2') format('woff2');
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Libron';
-  src: url('./fonts/Libron-Italic.woff2') format('woff2');
-  font-weight: 400;
-  font-style: italic;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Libron';
-  src: url('./fonts/Libron-BoldItalic.woff2') format('woff2');
-  font-weight: 700;
+  font-family: 'Plex Sans';
+  src: url('./fonts/plex-sans-italic.woff2') format('woff2');
+  font-weight: 100 700;
   font-style: italic;
   font-display: swap;
 }
@@ -44,7 +28,7 @@ body,
 }
 
 body {
-  font-family: "Libron", "Newsreader", "Charter", Georgia, serif;
+  font-family: "Plex Sans", "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -91,10 +75,9 @@ body {
 /* markdown body styles */
 .md-body {
   user-select: text;
-  font-size: 14.5px;
+  font-size: 14px;
   line-height: 1.7;
   color: var(--fg-dim);
-  letter-spacing: -0.005em;
 }
 
 .md-body p {
@@ -218,6 +201,17 @@ body {
   text-underline-offset: 2px;
 }
 
+.md-link {
+  color: var(--link);
+  font-weight: 500;
+}
+.md-link:hover {
+  filter: brightness(1.12);
+}
+[data-theme="light"] .md-link:hover {
+  filter: brightness(0.88);
+}
+
 /* ══════════════ theme tokens ══════════════ */
 :root,
 [data-theme="dark"] {
@@ -228,10 +222,10 @@ body {
   --border-soft: rgba(255, 255, 255, 0.12);
   --border-strong: rgba(255, 255, 255, 0.35);
   --code-bg: rgba(255, 255, 255, 0.09);
-  --pre-bg: rgba(10, 10, 14, 0.9);
+  --pre-bg: #17191e;
   --scroll: rgba(255, 255, 255, 0.14);
   --scroll-hi: rgba(255, 255, 255, 0.25);
-  --link: #67e8f9;
+  --link: #a5b4fc;
   --cursor: #ffffff;
   --accent: #ffffff;
   --sel-fg: #111114;
@@ -252,7 +246,7 @@ body {
   --pre-bg: #efeff3;
   --scroll: rgba(29, 29, 34, 0.22);
   --scroll-hi: rgba(29, 29, 34, 0.38);
-  --link: #0e7490;
+  --link: #4f46e5;
   --cursor: #1d1d22;
   --accent: #17171c;
   --sel-fg: #ffffff;
@@ -325,8 +319,9 @@ body {
 [data-theme="light"] [class~="bg-amber-400"] { background-color: #f59e0b; }
 [data-theme="light"] [class~="bg-amber-500/20"] { background-color: rgba(217, 119, 6, 0.14); }
 [data-theme="light"] [class~="border-amber-500/30"] { border-color: rgba(217, 119, 6, 0.4); }
-[data-theme="light"] [class~="text-cyan-400"] { color: #0e7490; }
-[data-theme="light"] [class~="hover:text-cyan-300"]:hover { color: #0e7490; }
+[data-theme="light"] [class~="text-violet-300"] { color: #6d28d9; }
+[data-theme="light"] [class~="bg-violet-400/10"] { background-color: rgba(109, 40, 217, 0.08); }
+[data-theme="light"] [class~="border-violet-400/30"] { border-color: rgba(109, 40, 217, 0.35); }
 [data-theme="light"] [class~="ring-black"] { --tw-ring-color: #fafafa; }
 [data-theme="light"] [class~="accent-white"] { accent-color: #18181d; }
 

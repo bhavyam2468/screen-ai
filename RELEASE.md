@@ -1,62 +1,59 @@
-# Cutting a release
+# Updates: push-to-release
 
-Both the installer (`install.sh`) and the in-app updater expect the same
-release layout. Follow these steps exactly.
+There is no manual release process. CI builds every push:
 
-## 1. Bump the version
+- push to `main` → builds → republishes the **`v1-continuous`** release (stable)
+- push to any other branch → builds → republishes **`continuous-beta`** (prerelease)
 
-`src-tauri/Cargo.toml` (`version = "x.y.z"`) and `package.json` must match.
-The updater compares the release tag against `CARGO_PKG_VERSION` with semver.
+## Versions
 
-## 2. Build the release binary
+Versions are git-based: **`v1.<short-sha>`**, e.g. `v1.3716db4`. The commit SHA
+plus its timestamp are embedded at compile time (see `src-tauri/build.rs`);
+`Cargo.toml`'s `1.0.0` is scaffolding for the major line only. An update is
+offered whenever a rolling release points at a strictly newer commit than the
+running build.
 
-```bash
-npm install
-npm run build
-cd src-tauri && cargo build --release
+## Changelog
+
+The release notes are the built commit's subject + body, followed by a machine
+footer the updater parses (invisible on GitHub, which renders it as a comment):
+
+```
+<subject>
+
+<body>
+
+<!-- screen-ai-build -->
+sha: <full sha>
+time: <unix commit time>
+branch: <branch>
 ```
 
-Sanity checks before packaging:
+Write commit messages for end users — they show up in-app on the update card.
 
-```bash
-# gtk must resolve to ONE 0.18.x shared with wry/tao (see Cargo.toml note)
-cargo tree -i gtk
+## Beta
+
+A beta is offered only while its branch is genuinely ahead of `main` (checked
+live via the compare API) and only when it is newer than both the running
+build and stable. If several branches move, beta tracks the most recently
+pushed one.
+
+## Installers
+
+`install.sh` pulls the stable tarball directly, bypassing "latest":
+
+```
+releases/download/v1-continuous/screen-ai-x86_64-linux.tar.gz (+ .sha256)
 ```
 
-## 3. Package the tarball
+## Bootstrap note
 
-The tarball must contain exactly one entry — `screen-ai` at the root.
-Anything else and both the installer and the updater will refuse it.
+The stable tag is deliberately named `v1-continuous`, not `continuous`:
+pre-1.0 updaters normalize any `v1*` tag to `1.0.0`, which reads as newer than
+`0.x` — so their last old-style update carries them onto this pipeline. Do
+not rename the tag.
 
-```bash
-cd src-tauri/target/release
-tar -czf screen-ai-x86_64-linux.tar.gz screen-ai
-tar -tzf screen-ai-x86_64-linux.tar.gz   # must print exactly: screen-ai
-```
+## If CI is red
 
-## 4. Publish the checksum sidecar
-
-```bash
-sha256sum screen-ai-x86_64-linux.tar.gz > screen-ai-x86_64-linux.tar.gz.sha256
-```
-
-Upload **both** files as release assets. The updater looks for
-`<tarball>.sha256` first, then falls back to `SHA256SUMS*` / `checksums*.txt`
-assets, then to `<download-url>.sha256`. A present-but-mismatched checksum is a
-hard install failure; a missing sidecar installs with a warning (back-compat
-with old releases).
-
-## 5. Tag + publish
-
-```bash
-# e.g. v0.2.0 — tags may carry a leading `v`, it is stripped for comparison
-git tag v0.2.0 && git push origin v0.2.0
-gh release create v0.2.0 \
-  screen-ai-x86_64-linux.tar.gz \
-  screen-ai-x86_64-linux.tar.gz.sha256 \
-  --title "v0.2.0" --notes "…"
-```
-
-`install.sh` pulls `releases/latest/download/screen-ai-x86_64-linux.tar.gz`,
-so keep that asset name stable. The release-notes body is shown in-app on the
-update prompt — write it for end users, not just a changelog dump.
+Failed builds publish nothing; the updater keeps offering the last good one.
+Check the Actions tab, fix forward, push again.

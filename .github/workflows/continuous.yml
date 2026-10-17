@@ -1,0 +1,90 @@
+name: continuous
+
+# Every push is a release: main republishes stable, any other branch
+# republishes beta. See RELEASE.md for the full picture.
+on:
+  push:
+    branches: ["**"]
+
+concurrency:
+  group: continuous-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # Oldest baseline with webkit2gtk-4.1: the binary runs on more systems.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            build-essential curl wget file pkg-config \
+            libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev \
+            libgtk-layer-shell-dev \
+            patchelf libssl-dev libxdo-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Build
+        working-directory: src-tauri
+        run: cargo build --release
+
+      - name: Package
+        working-directory: src-tauri/target/release
+        run: |
+          tar -czf screen-ai-x86_64-linux.tar.gz screen-ai
+          sha256sum screen-ai-x86_64-linux.tar.gz > screen-ai-x86_64-linux.tar.gz.sha256
+          tar -tzf screen-ai-x86_64-linux.tar.gz
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA="$(git rev-parse HEAD)"
+          TIME="$(git log -1 --format=%ct)"
+          BRANCH="${GITHUB_REF_NAME:?}"
+          SUBJECT="$(git log -1 --format=%s)"
+          BODY="$(git log -1 --format=%b)"
+          if [ "$BRANCH" = "main" ]; then
+            TAG="v1-continuous"; TITLE="Stable — main"; EXTRA=""
+          else
+            TAG="continuous-beta"; TITLE="Beta — $BRANCH"; EXTRA="--prerelease"
+          fi
+          {
+            printf '%s\n\n%s\n\n' "$SUBJECT" "$BODY"
+            printf '<!-- screen-ai-build -->\n'
+            printf 'sha: %s\ntime: %s\nbranch: %s\n' "$SHA" "$TIME" "$BRANCH"
+          } > notes.md
+          git tag -f "$TAG" "$SHA"
+          git push -f origin "refs/tags/$TAG:refs/tags/$TAG"
+          # shellcheck disable=SC2086
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" \
+              src-tauri/target/release/screen-ai-x86_64-linux.tar.gz \
+              src-tauri/target/release/screen-ai-x86_64-linux.tar.gz.sha256 \
+              --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes-file notes.md
+          else
+            gh release create "$TAG" \
+              src-tauri/target/release/screen-ai-x86_64-linux.tar.gz \
+              src-tauri/target/release/screen-ai-x86_64-linux.tar.gz.sha256 \
+              --title "$TITLE" --notes-file notes.md --target "$SHA" $EXTRA
+          fi

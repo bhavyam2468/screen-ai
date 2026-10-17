@@ -136,7 +136,7 @@ export default function Dock(p: Props) {
       }}
       transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 380, damping: 32 }}
       onAnimationComplete={() => pushRegion.current()}
-      style={{ backgroundColor: `rgba(${p.dark ? "0,0,0" : "255,255,255"},${opacity})` }}
+      style={{ backgroundColor: `rgba(${p.dark ? "34,36,42" : "247,247,249"},${opacity})` }}
       className="dock-card pointer-events-auto w-[540px] max-w-[calc(100vw-24px)] rounded-xl border border-white/15 shadow-2xl overflow-hidden"
     >
       <AnimatePresence initial={false}>
@@ -173,7 +173,7 @@ export default function Dock(p: Props) {
           open ? "border-white/10" : "border-transparent"
         }`}
       >
-        <div className="shrink-0 w-7 h-7 rounded-lg overflow-hidden bg-neutral-900 border border-white/30 flex items-center justify-center">
+        <div className="shrink-0 w-7 h-7 rounded-lg overflow-hidden bg-neutral-800 border border-white/30 flex items-center justify-center">
           {p.thumb ? (
             <motion.img
               key="thumb"

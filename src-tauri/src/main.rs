@@ -27,8 +27,6 @@ pub struct Settings {
     pub max_tokens: u32,
     #[serde(default = "d_opacity")]
     pub bg_opacity: u8,
-    #[serde(default = "d_font")]
-    pub font_family: String,
     #[serde(default = "d_theme")]
     pub theme: String,
 }
@@ -51,9 +49,6 @@ fn d_tokens() -> u32 {
 fn d_opacity() -> u8 {
     100
 }
-fn d_font() -> String {
-    "libron".into()
-}
 fn d_theme() -> String {
     "auto".into()
 }
@@ -68,7 +63,6 @@ impl Default for Settings {
             position: d_pos(),
             max_tokens: d_tokens(),
             bg_opacity: d_opacity(),
-            font_family: d_font(),
             theme: d_theme(),
         }
     }
@@ -923,78 +917,107 @@ fn tray_icon_image() -> tauri::image::Image<'static> {
 // ─── Updates ─────────────────────────────────────────────────────────────────
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct UpdateInfo {
-    pub current_version: String,
-    pub latest_version: String,
-    pub has_update: bool,
-    pub release_notes: String,
+pub struct UpdateOffer {
+    pub version: String,
+    pub sha: String,
+    pub committed_at: i64,
+    pub branch: String,
+    pub changelog: String,
     pub download_url: String,
     pub checksum_url: String,
-    pub published_at: String,
 }
 
-fn normalize_version(v: &str) -> String {
-    let core = v
-        .trim()
-        .trim_start_matches(&['v', 'V'][..])
-        .split(&['-', '+'][..])
-        .next()
-        .unwrap_or("0");
-    let mut parts: Vec<String> = core
-        .split('.')
-        .take(3)
-        .map(|p| {
-            let digits: String = p.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if digits.is_empty() {
-                "0".to_string()
-            } else {
-                digits
-            }
-        })
-        .collect();
-    while parts.len() < 3 {
-        parts.push("0".to_string());
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct UpdateStatus {
+    pub current_version: String,
+    pub current_sha: String,
+    pub stable: Option<UpdateOffer>,
+    pub beta: Option<UpdateOffer>,
+}
+
+// Rolling releases (see .github/workflows/continuous.yml): every push to main
+// republishes the stable one, every push elsewhere the beta one. The stable
+// tag is deliberately shaped so pre-1.0 updaters read it as 1.0.0 > 0.x,
+// which bootstraps them onto this pipeline with one last old-style update.
+const RELEASE_STABLE_TAG: &str = "v1-continuous";
+const RELEASE_BETA_TAG: &str = "continuous-beta";
+const REPO_API: &str = "https://api.github.com/repos/bhavyam2468/screen-ai";
+const BUILD_FOOTER: &str = "\n<!-- screen-ai-build -->\n";
+
+/// Display version: v1.<short-sha> of the built commit.
+fn app_version() -> String {
+    let sha = env!("SCREEN_AI_COMMIT");
+    let dirty = env!("SCREEN_AI_DIRTY") == "1";
+    format!("v1.{}{}", sha, if dirty { "+dirty" } else { "" })
+}
+
+fn app_commit_time() -> i64 {
+    env!("SCREEN_AI_COMMIT_TIME").parse::<i64>().unwrap_or(0)
+}
+
+fn short_sha(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
+/// Split a rolling-release body into (changelog, sha, time, branch).
+/// Without CI's machine footer we refuse to guess.
+fn parse_release_body(body: &str) -> Option<(String, String, i64, String)> {
+    let (changelog, footer) = body.split_once(BUILD_FOOTER)?;
+    let mut sha = String::new();
+    let mut time: i64 = 0;
+    let mut branch = String::new();
+    for line in footer.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("sha:") {
+            sha = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("time:") {
+            time = v.trim().parse::<i64>().unwrap_or(0);
+        } else if let Some(v) = line.strip_prefix("branch:") {
+            branch = v.trim().to_string();
+        }
     }
-    parts.join(".")
-}
-
-fn is_newer_version(latest: &str, current: &str) -> bool {
-    match (
-        semver::Version::parse(&normalize_version(latest)),
-        semver::Version::parse(&normalize_version(current)),
-    ) {
-        (Ok(l), Ok(c)) => l > c,
-        // Unparseable tags: any non-empty difference counts as an update.
-        _ => !latest.trim().is_empty() && latest.trim() != current.trim(),
+    if sha.is_empty() || time <= 0 {
+        return None;
     }
+    Some((changelog.trim().to_string(), sha, time, branch))
 }
 
-#[tauri::command]
-async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateInfo, String> {
-    let current_version = env!("CARGO_PKG_VERSION").to_string();
-    let url = "https://api.github.com/repos/bhavyam2468/screen-ai/releases/latest";
-    let res = state
-        .client
-        .get(url)
+/// Strictly newer commits only — equal means same commit.
+fn is_newer_offer(remote_time: i64, ours_time: i64) -> bool {
+    remote_time > ours_time
+}
+
+/// Beta is only interesting when newer than both our build and stable.
+fn beta_worth_showing(beta_time: i64, ours_time: i64, stable_time: Option<i64>) -> bool {
+    beta_time > ours_time && stable_time.map(|s| beta_time > s).unwrap_or(true)
+}
+
+async fn fetch_offer(
+    client: &reqwest::Client,
+    tag: &str,
+) -> Result<Option<UpdateOffer>, String> {
+    let url = format!("{REPO_API}/releases/tags/{tag}");
+    let res = client
+        .get(&url)
         .header("User-Agent", "screen-ai")
         .header("Accept", "application/vnd.github.v3+json")
         .send()
         .await
         .map_err(|e| format!("Failed to contact GitHub: {e}"))?;
-
+    if res.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
     if !res.status().is_success() {
         return Err(format!("GitHub returned HTTP {}", res.status()));
     }
-
     let json: serde_json::Value = res
         .json()
         .await
         .map_err(|e| format!("Failed to parse release info: {e}"))?;
-
-    let tag = json["tag_name"].as_str().unwrap_or("").to_string();
-    let release_notes = json["body"].as_str().unwrap_or("").to_string();
-    let published_at = json["published_at"].as_str().unwrap_or("").to_string();
-
+    let body = json["body"].as_str().unwrap_or("");
+    let Some((changelog, sha, time, branch)) = parse_release_body(body) else {
+        return Ok(None);
+    };
     let mut download_url = String::new();
     let mut tarball_name = String::new();
     if let Some(assets) = json["assets"].as_array() {
@@ -1010,15 +1033,10 @@ async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateIn
             }
         }
     }
-
-    if download_url.is_empty() && !tag.is_empty() {
-        tarball_name = "screen-ai-x86_64-linux.tar.gz".to_string();
-        download_url = format!(
-            "https://github.com/bhavyam2468/screen-ai/releases/download/{tag}/{tarball_name}"
-        );
+    // No tarball (mid-publish): unusable release, treat as absent.
+    if download_url.is_empty() {
+        return Ok(None);
     }
-
-    // Checksum sidecar: `<tarball>.sha256`, or a repo-level sums file.
     let mut checksum_url = String::new();
     if let Some(assets) = json["assets"].as_array() {
         let want_sidecar = format!("{tarball_name}.sha256");
@@ -1026,13 +1044,7 @@ async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateIn
             let Some(name) = asset["name"].as_str() else {
                 continue;
             };
-            let lower = name.to_lowercase();
-            let is_sums = name == want_sidecar
-                || lower == "sha256sums"
-                || lower == "sha256sums.txt"
-                || lower == "checksums.txt"
-                || lower == "checksums-sha256.txt";
-            if is_sums {
+            if name == want_sidecar {
                 if let Some(dl) = asset["browser_download_url"].as_str() {
                     checksum_url = dl.to_string();
                     break;
@@ -1040,21 +1052,65 @@ async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateIn
             }
         }
     }
-    if checksum_url.is_empty() && !download_url.is_empty() {
-        // Conventional fallback: sidecar published next to the tarball.
+    if checksum_url.is_empty() {
         checksum_url = format!("{download_url}.sha256");
     }
-
-    let has_update = is_newer_version(&tag, &current_version);
-
-    Ok(UpdateInfo {
-        current_version,
-        latest_version: tag,
-        has_update,
-        release_notes,
+    Ok(Some(UpdateOffer {
+        version: format!("v1.{}", short_sha(&sha)),
+        sha,
+        committed_at: time,
+        branch,
+        changelog,
         download_url,
         checksum_url,
-        published_at,
+    }))
+}
+
+/// True only while BRANCH has commits main doesn't, so a merged branch's
+/// leftover beta release is never offered.
+async fn branch_is_ahead(client: &reqwest::Client, branch: &str) -> bool {
+    if branch.is_empty() || branch == "main" {
+        return false;
+    }
+    let url = format!("{REPO_API}/compare/main...{branch}");
+    let Ok(res) = client
+        .get(&url)
+        .header("User-Agent", "screen-ai")
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .await
+    else {
+        return false;
+    };
+    let Ok(json) = res.json::<serde_json::Value>().await else {
+        return false;
+    };
+    json["ahead_by"].as_u64().unwrap_or(0) > 0
+        && matches!(json["status"].as_str(), Some("ahead") | Some("diverged"))
+}
+
+#[tauri::command]
+async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateStatus, String> {
+    let ours_time = app_commit_time();
+    let ours_sha = env!("SCREEN_AI_COMMIT").to_string();
+
+    let stable = fetch_offer(&state.client, RELEASE_STABLE_TAG).await?;
+    let mut beta = fetch_offer(&state.client, RELEASE_BETA_TAG).await?;
+    if let Some(ref b) = beta {
+        if !branch_is_ahead(&state.client, &b.branch).await {
+            beta = None;
+        }
+    }
+
+    let stable = stable.filter(|o| is_newer_offer(o.committed_at, ours_time));
+    let stable_time = stable.as_ref().map(|o| o.committed_at);
+    let beta = beta.filter(|o| beta_worth_showing(o.committed_at, ours_time, stable_time));
+
+    Ok(UpdateStatus {
+        current_version: app_version(),
+        current_sha: ours_sha,
+        stable,
+        beta,
     })
 }
 
@@ -1423,12 +1479,12 @@ fn main() {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
             "screen-ai {}\n\nUsage:\n  screen-ai             start (runs in the tray)\n  screen-ai --toggle    summon/dismiss the overlay\n  screen-ai --settings  open settings\n  screen-ai --version   print version",
-            env!("CARGO_PKG_VERSION")
+            app_version()
         );
         return;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("screen-ai {}", env!("CARGO_PKG_VERSION"));
+        println!("screen-ai {}", app_version());
         return;
     }
     ensure_layer_preload();
@@ -1542,4 +1598,42 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running screen-ai");
+}
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    #[test]
+    fn footer_parses() {
+        let body = "Fix the thing\n\nLonger explanation.\n<!-- screen-ai-build -->\nsha: abc1234567890\ntime: 1760000000\nbranch: main\n";
+        let (log, sha, time, branch) = parse_release_body(body).unwrap();
+        assert_eq!(log, "Fix the thing\n\nLonger explanation.");
+        assert_eq!(sha, "abc1234567890");
+        assert_eq!(time, 1760000000);
+        assert_eq!(branch, "main");
+    }
+
+    #[test]
+    fn footer_rejects_garbage() {
+        assert!(parse_release_body("no footer here").is_none());
+        assert!(parse_release_body("x\n<!-- screen-ai-build -->\nsha: \ntime: 0\n").is_none());
+        assert!(parse_release_body("x\n<!-- screen-ai-build -->\nsha: abc\ntime: soon\n").is_none());
+    }
+
+    #[test]
+    fn offer_ordering() {
+        assert!(is_newer_offer(200, 100));
+        assert!(!is_newer_offer(100, 100));
+        assert!(!is_newer_offer(50, 100));
+    }
+
+    #[test]
+    fn beta_selection() {
+        assert!(beta_worth_showing(300, 100, Some(200)));
+        assert!(!beta_worth_showing(150, 100, Some(200)));
+        assert!(beta_worth_showing(150, 100, None));
+        assert!(!beta_worth_showing(100, 100, None));
+        assert!(!beta_worth_showing(50, 100, None));
+    }
 }

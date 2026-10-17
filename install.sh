@@ -277,7 +277,8 @@ bin_ok() {
 download_release() {
   [ "$ARCH" = x86_64 ] || return 1
   have curl || return 1
-  local url="https://github.com/$REPO/releases/latest/download/screen-ai-x86_64-linux.tar.gz" tmp
+  # Rolling stable release, republished by CI on every push to main.
+  local url="https://github.com/$REPO/releases/download/v1-continuous/screen-ai-x86_64-linux.tar.gz" tmp
   tmp="$(mktemp -d)"
   curl -fsSL "$url" -o "$tmp/sa.tgz" || { rm -rf "$tmp"; return 1; }
   # Integrity: verify the sha256 sidecar when the release publishes one.
