@@ -1419,6 +1419,18 @@ fn ensure_layer_preload() {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!(
+            "screen-ai {}\n\nUsage:\n  screen-ai             start (runs in the tray)\n  screen-ai --toggle    summon/dismiss the overlay\n  screen-ai --settings  open settings\n  screen-ai --version   print version",
+            env!("CARGO_PKG_VERSION")
+        );
+        return;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("screen-ai {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     ensure_layer_preload();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -1429,10 +1441,12 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             if argv.iter().any(|a| a == "--settings") {
                 show_settings(app);
-            } else {
-                // Any second launch (notably `screen-ai --toggle`) wakes the overlay.
+            } else if argv.iter().any(|a| a == "--toggle") {
                 do_toggle(app);
             }
+            // Any other second launch (bare `screen-ai`, autostart races,
+            // sway/i3 `exec` firing on every reload) is a deliberate no-op:
+            // the app is already running, and toggling would be surprising.
         }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()

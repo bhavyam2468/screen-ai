@@ -190,7 +190,9 @@ detect_env() {
   elif [[ "$DE" == *cinnamon* ]]; then WM=cinnamon
   elif [[ "$DE" == *mate* ]]; then WM=mate
   elif [ -n "${I3SOCK:-}" ] || [[ "$DE" == *i3* ]]; then WM=i3
-  elif [[ "$DE" == *river* || "$DE" == *labwc* || "$DE" == *wayfire* ]]; then WM=wlroots
+  elif [[ "$DE" == *river* ]]; then WM=river
+  elif [[ "$DE" == *labwc* ]]; then WM=labwc
+  elif [[ "$DE" == *wayfire* ]]; then WM=wayfire
   fi
   ARCH="$(uname -m)"
 }
@@ -386,7 +388,8 @@ setup_provider() {
   "position": "$POSITION",
   "max_tokens": 800,
   "bg_opacity": $OPACITY,
-  "font_family": "libron"
+  "font_family": "libron",
+  "theme": "auto"
 }
 EOF
   chmod 600 "$CFG_DIR/settings.json"
@@ -394,132 +397,406 @@ EOF
 }
 
 # ── keybinding + autostart per environment ───────────────────────────────────
-MARK="# screen-ai"
-add_line_once() { # file line
-  mkdir -p "$(dirname "$1")"; touch "$1"
-  grep -qxF "$2" "$1" || printf '%s\n' "$2" >>"$1"
+# ── keybinding + autostart per environment ───────────────────────────────────
+# Same strategy on every compositor:
+#   1. absolute binary path everywhere (session PATH often lacks ~/.local/bin,
+#      which silently breaks bare `screen-ai` binds and autostart entries)
+#   2. drop-in file + ONE include/source line (never sed-surgery inside blocks)
+#   3. backup before touching any user file (the first backup is kept forever)
+#   4. validate after writing where possible; roll back on failure
+#   5. record every change in the install receipt for clean uninstall
+RECEIPT="$SHARE_DIR/receipt"
+BIN_ABS="$BIN_DIR/screen-ai"
+CFGXDG="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+receipt_set() { # receipt_set KEY VALUE — upsert into the install receipt
+  mkdir -p "$SHARE_DIR"; touch "$RECEIPT"
+  grep -v "^$1=" "$RECEIPT" >"$RECEIPT.tmp" 2>/dev/null || true
+  printf '%s=%s\n' "$1" "$2" >>"$RECEIPT.tmp"
+  mv "$RECEIPT.tmp" "$RECEIPT"
+}
+
+add_line_once() { # add_line_once FILE LINE
+  touch "$1"
+  grep -qxF "$2" "$1" 2>/dev/null || printf '%s\n' "$2" >>"$1"
+}
+
+backup_once() { # backup_once FILE — keep the FIRST backup forever
+  [ -f "$1" ] || return 0
+  if [ ! -e "$1.screen-ai-bak" ]; then
+    cp -p "$1" "$1.screen-ai-bak" && note "backed up: $1 → $1.screen-ai-bak"
+  fi
+}
+
+ver_ge() { # ver_ge HAVE WANT → true if HAVE >= WANT
+  [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
+}
+
+# Config resolvers — print the live user config, or fail.
+resolve_niri_cfg() {
+  for c in "${NIRI_CONFIG:-}" "$CFGXDG/niri/config.kdl" "$HOME/.config/niri/config.kdl"; do
+    [ -n "$c" ] && [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+resolve_hypr_cfg() {
+  for c in "$CFGXDG/hypr/hyprland.conf" "$HOME/.config/hypr/hyprland.conf"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+resolve_sway_cfg() {
+  for c in "$CFGXDG/sway/config" "$HOME/.sway/config"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+resolve_i3_cfg() {
+  # NOTE: i3 ignores XDG_CONFIG_HOME; these are the two user-writable paths.
+  for c in "$HOME/.config/i3/config" "$HOME/.i3/config"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+# warn_if_shadowed FILE EREGEX LABEL — our lines are appended last, so they win
+# over earlier binds of the same combo; warn so the user can free the old one.
+warn_if_shadowed() {
+  local hit; hit="$(grep -vi 'screen-ai' "$1" 2>/dev/null | grep -iE "$2" | head -n1)"
+  [ -n "$hit" ] && warn "$3: that combo looks already bound — ours is appended last and wins; free the old one if unintended (${hit:0:70}…)"
+}
+
+# Convert ONE shortcut choice into every compositor's native format.
+convert_keys() { # $1 like "Super+Shift+s"
+  local combo="$1" IFS=+
+  local mods="${combo%+*}" key="${combo##*+}"
+  [ "$mods" = "$combo" ] && mods=""
+  local -a n_=() h_=() s_=() kd_=() r_=()
+  local g="" x=""
+  local m
+  for m in $mods; do
+    case "$m" in
+      Super) n_+=(Mod)  ; h_+=(SUPER); s_+=(Mod4); g+="<Super>" ; kd_+=(Meta) ; x+="<Super>"  ; r_+=(Super) ;;
+      Shift) n_+=(Shift); h_+=(SHIFT); s_+=(Shift); g+="<Shift>" ; kd_+=(Shift); x+="<Shift>"  ; r_+=(Shift) ;;
+      Ctrl)  n_+=(Ctrl) ; h_+=(CTRL) ; s_+=(Ctrl) ; g+="<Ctrl>"  ; kd_+=(Ctrl) ; x+="<Primary>"; r_+=(Ctrl)  ;;
+      Alt)   n_+=(Alt)  ; h_+=(ALT)  ; s_+=(Mod1) ; g+="<Alt>"   ; kd_+=(Alt)  ; x+="<Alt>"    ; r_+=(Alt)   ;;
+    esac
+  done
+  local low; low="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')"
+  local up;  up="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
+  # NOTE: single letters pair with UPPERCASE when Shift is held — pressing
+  # Shift+s produces keysym `S`, so `Mod+Shift+s` would never match in niri
+  # and isn't canonical in Qt sequences. (sway/i3/GTK all take lowercase.)
+  local skey="$key"
+  case "$key" in [a-z]) [[ "${n_[*]}" == *Shift* ]] && skey="$up" ;; esac
+  NIRI_KEY="${n_[*]}+$skey"
+  # NOTE: join FIRST, then substitute — ${h_[*]//…} would apply per-element
+  # (before joining), so the old one-step form silently kept the "+" joins.
+  HYPR_MODS="${h_[*]}"; HYPR_MODS="${HYPR_MODS//+/ }"
+  HYPR_KEY="$up"
+  SWAY_KEY="${s_[*]}+$low"
+  GNOME_KEY="$g$low"
+  CINNAMON_KEY="$g$low"
+  MATE_KEY="$g$low"
+  KDE_KEY="${kd_[*]}+$skey"
+  XFCE_KEY="$x$low"
+  RIVER_MODS="${r_[*]}"
+  RIVER_KEY="$up"
+  RIVER_SPEC="$RIVER_MODS $RIVER_KEY"
+  unset IFS
+  [ -z "$HYPR_MODS" ] && HYPR_MODS=SUPER
+  if [ -z "$RIVER_MODS" ]; then RIVER_MODS=None; RIVER_SPEC="None $RIVER_KEY"; fi
+}
+
+niri_version() { # prints MAJOR.MINOR or fails
+  have niri || return 1
+  niri --version 2>/dev/null | grep -oE '[0-9]+[.][0-9]+' | head -n1
+}
+
+manual_niri() { # [reason] — exact snippet for hand-install
+  [ -n "${1:-}" ] && warn "niri: $1"
+  note "add this line inside binds { … } in ~/.config/niri/config.kdl:"
+  note "    $NIRI_KEY hotkey-overlay-title=\"Screen AI\" { spawn \"$BIN_ABS\" \"--toggle\"; }"
+  note "and this at top level:  spawn-at-startup \"$BIN_ABS\""
 }
 
 bind_niri() {
-  local cfg="$HOME/.config/niri/config.kdl" inc="$HOME/.config/niri/screen-ai.kdl"
-  [ -f "$cfg" ] || { warn "no niri config found"; return 1; }
+  local cfg inc nv
+  cfg="$(resolve_niri_cfg)" || { manual_niri "no user config.kdl found"; return 1; }
+  nv="$(niri_version)" || { manual_niri "can't determine niri version (is niri installed?)"; return 1; }
+  ver_ge "$nv" "25.11" || { manual_niri "niri $nv predates config includes (needs 25.11+)"; return 1; }
+  inc="$(dirname "$cfg")/screen-ai.kdl"
+  backup_once "$cfg"
   cat >"$inc" <<EOF
-// screen-ai — managed by the Screen AI installer; removed by the uninstaller
+// screen-ai — managed by the Screen AI installer.
+// Deleting this file plus the matching \`include\` line in config.kdl removes
+// everything (the uninstaller does both).
 binds {
-    $NIRI_KEY hotkey-overlay-title="Screen AI" { spawn "screen-ai" "--toggle"; }
+    $NIRI_KEY hotkey-overlay-title="Screen AI" { spawn "$BIN_ABS" "--toggle"; }
 }
 
-spawn-at-startup "screen-ai"
+spawn-at-startup "$BIN_ABS"
 
+// Fallback-mode rules only: layer-shell needs none of this, but if the
+// compositor ever treats the overlay as a normal window, float it.
 window-rule {
-    match app-id=r#"^screen-ai$"#
+    match app-id=r#"^screen-ai\$"#
     open-floating true
     draw-border-with-background false
 }
 
-layer-rule {
-    match namespace="^screen-ai$"
+window-rule {
+    match title=r#"^Screen AI\$"#
+    open-floating true
+    draw-border-with-background false
 }
 EOF
-  add_line_once "$cfg" "include \"screen-ai.kdl\" // screen-ai"
-  have niri && niri validate >/dev/null 2>&1 || { warn "niri rejected the config"; return 1; }
-  ok "niri: $NIRI_KEY → screen-ai (hot-reloads automatically)"
+  add_line_once "$cfg" 'include "screen-ai.kdl" // screen-ai'
+  if niri validate -c "$cfg" >/dev/null 2>&1; then
+    warn_if_shadowed "$cfg" "${NIRI_KEY//+/[^A-Za-z]+}" "niri"
+    ok "niri $nv: $NIRI_KEY → toggle (validated; hot-reloads automatically)"
+  else
+    warn "niri rejected the new config — rolled back; add the keybind by hand instead"
+    sed -i '/screen-ai[.]kdl/d' "$cfg"; rm -f "$inc"
+    manual_niri
+    return 1
+  fi
+}
+
+hypr_version() { # prints version or fails
+  local v=""
+  if have hyprctl; then v="$(hyprctl version 2>/dev/null | head -n1 | grep -oE '[0-9]+[.][0-9]+([.][0-9]+)?' | head -n1)"; fi
+  if [ -z "$v" ] && have hyprland; then v="$(hyprland --version 2>/dev/null | grep -oE '[0-9]+[.][0-9]+([.][0-9]+)?' | head -n1)"; fi
+  [ -n "$v" ] && printf '%s' "$v"
 }
 
 bind_hyprland() {
-  local cfg="$HOME/.config/hypr/hyprland.conf" inc="$HOME/.config/hypr/screen-ai.conf"
-  [ -f "$cfg" ] || { warn "no hyprland.conf found"; return 1; }
-  cat >"$inc" <<EOF
-# screen-ai — managed by the Screen AI installer; removed by the uninstaller
-
-# Keybind & autostart
-bind = $HYPR_MODS, $HYPR_KEY, exec, screen-ai --toggle
-exec-once = screen-ai
-
-# Layer rules (for Wayland layer-shell overlay surface)
-layerrule = noanim, screen-ai
-layerrule = blur, screen-ai
-layerrule = ignorealpha 0.5, screen-ai
-
-# Window rules (for fallback / floating window mode)
-windowrulev2 = float, class:^(screen-ai)$
-windowrulev2 = noanim, class:^(screen-ai)$
-windowrulev2 = noborder, class:^(screen-ai)$
-windowrulev2 = noshadow, class:^(screen-ai)$
-EOF
-  add_line_once "$cfg" "source = ~/.config/hypr/screen-ai.conf # screen-ai"
+  local cfg inc hv kw
+  cfg="$(resolve_hypr_cfg)" || { warn "hyprland: no hyprland.conf found"; return 1; }
+  hv="$(hypr_version)" || hv=""
+  inc="$(dirname "$cfg")/screen-ai.conf"
+  backup_once "$cfg"
+  {
+    echo "# screen-ai — managed by the Screen AI installer; removed by the uninstaller"
+    echo
+    echo "bind = $HYPR_MODS, $HYPR_KEY, exec, $BIN_ABS --toggle"
+    echo "exec-once = $BIN_ABS"
+    echo
+    if [ -z "$hv" ] || ver_ge "$hv" "0.53"; then
+      [ -z "$hv" ] && note "hyprland: version unknown — writing current (≥ 0.53) syntax" >&2
+      echo "# Layer + window rules — Hyprland ≥ 0.53 syntax"
+      echo "layerrule = blur on, match:namespace ^(screen-ai\$)"
+      echo "layerrule = ignore_alpha 0.5, match:namespace ^(screen-ai\$)"
+      echo "layerrule = no_anim on, match:namespace ^(screen-ai\$)"
+      echo
+      echo "# Fallback-mode rules only (layer-shell needs none of this)"
+      echo "windowrule = match:class ^(screen-ai\$), float on, no_anim on"
+      echo "windowrule = match:title ^(Screen AI\$), float on, no_anim on"
+    else
+      echo "# Layer + window rules — pre-0.53 syntax (hyprland $hv)"
+      echo "layerrule = blur, ^(screen-ai\$)"
+      echo "layerrule = ignorealpha 0.5, ^(screen-ai\$)"
+      echo "layerrule = noanim, ^(screen-ai\$)"
+      echo
+      if ver_ge "$hv" "0.48"; then kw=windowrule; else kw=windowrulev2; fi
+      echo "$kw = float, noanim, class:^(screen-ai\$)"
+      echo "$kw = float, noanim, title:^(Screen AI\$)"
+    fi
+  } >"$inc"
+  add_line_once "$cfg" "source = $inc # screen-ai"
+  warn_if_shadowed "$cfg" "bind[a-z]* *=.*${HYPR_MODS// /.*}.*,[ ]*${HYPR_KEY}([ ,]|\$)" "hyprland"
   have hyprctl && hyprctl reload >/dev/null 2>&1
-  ok "hyprland: $HYPR_MODS+$HYPR_KEY → screen-ai"
+  ok "hyprland${hv:+ $hv}: $HYPR_MODS + $HYPR_KEY → toggle"
 }
 
 bind_sway() {
-  local cfg="$HOME/.config/sway/config" inc="$HOME/.config/sway/screen-ai.conf"
-  [ -f "$cfg" ] || { warn "no sway config found"; return 1; }
+  local cfg inc
+  cfg="$(resolve_sway_cfg)" || { warn "sway: no sway config found"; return 1; }
+  inc="$(dirname "$cfg")/screen-ai.conf"
+  backup_once "$cfg"
   cat >"$inc" <<EOF
 # screen-ai — managed by the Screen AI installer; removed by the uninstaller
-bindsym $SWAY_KEY exec screen-ai --toggle
-exec screen-ai
+bindsym $SWAY_KEY exec $BIN_ABS --toggle
+exec $BIN_ABS
 for_window [app_id="screen-ai"] floating enable, border none
+for_window [title="Screen AI"] floating enable, border none
 EOF
-  add_line_once "$cfg" "include ~/.config/sway/screen-ai.conf # screen-ai"
+  add_line_once "$cfg" "include $inc # screen-ai"
+  warn_if_shadowed "$cfg" "bindsym.*${SWAY_KEY//+/.*}([^a-zA-Z]|\$)" "sway"
   have swaymsg && swaymsg reload >/dev/null 2>&1
-  ok "sway: $SWAY_KEY → screen-ai"
+  ok "sway: $SWAY_KEY → toggle"
 }
 
 bind_i3() {
-  local cfg="$HOME/.config/i3/config"; [ -f "$cfg" ] || cfg="$HOME/.i3/config"
-  [ -f "$cfg" ] || { warn "no i3 config found"; return 1; }
-  grep -q "screen-ai BEGIN" "$cfg" || cat >>"$cfg" <<EOF
-
-# screen-ai BEGIN
-bindsym $SWAY_KEY exec --no-startup-id screen-ai --toggle
-exec --no-startup-id screen-ai
-for_window [class="screen-ai"] floating enable, border none
-# screen-ai END
+  local cfg inc
+  cfg="$(resolve_i3_cfg)" || { warn "i3: no i3 config found"; return 1; }
+  inc="$(dirname "$cfg")/screen-ai.conf"
+  backup_once "$cfg"
+  # migrate the inline block written by older installers to the drop-in
+  if grep -q "screen-ai BEGIN" "$cfg" 2>/dev/null; then
+    sed -i '/# screen-ai BEGIN/,/# screen-ai END/d' "$cfg"
+    note "migrated the legacy i3 block to screen-ai.conf"
+  fi
+  cat >"$inc" <<EOF
+# screen-ai — managed by the Screen AI installer; removed by the uninstaller
+bindsym $SWAY_KEY exec --no-startup-id $BIN_ABS --toggle
+exec --no-startup-id $BIN_ABS
+for_window [class="screen-ai"] floating enable, border pixel 0
+for_window [title="Screen AI"] floating enable, border pixel 0
 EOF
+  add_line_once "$cfg" "include $inc # screen-ai"
+  warn_if_shadowed "$cfg" "bindsym.*${SWAY_KEY//+/.*}([^a-zA-Z]|\$)" "i3"
+  if have i3 && ! i3 -C -c "$cfg" >/dev/null 2>&1; then
+    warn "i3 rejected the new config — rolled back"
+    sed -i '/screen-ai[.]conf/d' "$cfg"; rm -f "$inc"
+    return 1
+  fi
   have i3-msg && i3-msg reload >/dev/null 2>&1
-  ok "i3: $SWAY_KEY → screen-ai"
+  ok "i3: $SWAY_KEY → toggle"
+}
+
+bind_river() {
+  local init="$CFGXDG/river/init"
+  if [ ! -f "$init" ]; then
+    note "river: no init script at $init — run this once (and add it to init):"
+    note "    riverctl map normal $RIVER_SPEC spawn \"$BIN_ABS --toggle\""
+    return 1
+  fi
+  backup_once "$init"
+  add_line_once "$init" "riverctl map normal $RIVER_SPEC spawn \"$BIN_ABS --toggle\" # screen-ai"
+  add_line_once "$init" "$BIN_ABS >/dev/null 2>&1 & # screen-ai autostart"
+  warn_if_shadowed "$init" "map.*normal.*${RIVER_MODS//+/.*}.* ${RIVER_KEY}([^a-zA-Z]|\$)" "river"
+  if have riverctl; then
+    if riverctl map normal $RIVER_SPEC spawn "$BIN_ABS --toggle" >/dev/null 2>&1; then
+      ok "river: $RIVER_SPEC → toggle (live + in init)"
+    else
+      warn "riverctl rejected the bind (not on river?) — kept in init for next login"
+      return 1
+    fi
+  else
+    ok "river: $RIVER_SPEC → toggle (in init; takes effect next login)"
+  fi
 }
 
 bind_gnome() {
-  have gsettings || return 1
+  have gsettings || { warn "gnome: gsettings not found"; return 1; }
+  gsettings list-schemas 2>/dev/null | grep -qx org.gnome.settings-daemon.plugins.media-keys \
+    || { warn "gnome: media-keys schema missing"; return 1; }
   local base=/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/screen-ai/
   local schema="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding:$base"
-  gsettings set "$schema" name "Screen AI"
-  gsettings set "$schema" command "screen-ai --toggle"
-  gsettings set "$schema" binding "$GNOME_KEY"
+  local clash; clash="$(gsettings list-recursively org.gnome.desktop.wm.keybindings org.gnome.shell.keybindings org.gnome.settings-daemon.plugins.media-keys 2>/dev/null | grep -v screen-ai | grep -F "'$GNOME_KEY'" | head -n1)"
+  [ -n "$clash" ] && warn "gnome: $GNOME_KEY already does something — change it in Settings → Keyboard if needed"
+  gsettings set "$schema" name "Screen AI" || return 1
+  gsettings set "$schema" command "$BIN_ABS --toggle" || return 1
+  gsettings set "$schema" binding "$GNOME_KEY" || return 1
   local cur; cur="$(gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings)"
   case "$cur" in *"$base"*) ;; *)
     if [ "$cur" = "@as []" ] || [ "$cur" = "[]" ]; then cur="['$base']"; else cur="${cur%]}, '$base']"; fi
-    gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$cur" ;;
+    gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "$cur" || return 1 ;;
   esac
-  ok "gnome: $GNOME_KEY → screen-ai"
+  ok "gnome: $GNOME_KEY → toggle"
+}
+
+bind_cinnamon() {
+  have gsettings || { warn "cinnamon: gsettings not found"; return 1; }
+  gsettings list-schemas 2>/dev/null | grep -qx org.cinnamon.desktop.keybindings \
+    || { warn "cinnamon: keybindings schema missing"; return 1; }
+  local base=/org/cinnamon/desktop/keybindings/custom-keybindings/
+  local sch=org.cinnamon.desktop.keybindings.custom-keybinding
+  # reuse our slot if present, else take the first free customN
+  local item="" cmd i
+  for i in $(seq 0 49); do
+    cmd="$(gsettings get "$sch:$base/custom$i/" command 2>/dev/null)" || continue
+    if [ "$cmd" = "''" ] || [[ "$cmd" == *screen-ai* ]]; then item="custom$i"; break; fi
+  done
+  [ -z "$item" ] && { warn "cinnamon: no free custom-keybinding slot"; return 1; }
+  gsettings set "$sch:$base/$item/" name "Screen AI" || return 1
+  gsettings set "$sch:$base/$item/" command "$BIN_ABS --toggle" || return 1
+  gsettings set "$sch:$base/$item/" binding "['$CINNAMON_KEY']" || return 1
+  local cur; cur="$(gsettings get org.cinnamon.desktop.keybindings custom-list)"
+  case "$cur" in *"'$item'"*) ;; *)
+    if [ "$cur" = "@as []" ] || [ "$cur" = "[]" ]; then cur="['$item']"; else cur="${cur%]}, '$item']"; fi
+    gsettings set org.cinnamon.desktop.keybindings custom-list "$cur" || return 1 ;;
+  esac
+  receipt_set CINNAMON_SLOT "$item"
+  ok "cinnamon: $CINNAMON_KEY → toggle"
+}
+
+bind_mate() {
+  have gsettings || { warn "mate: gsettings not found"; return 1; }
+  # fixed per-slot schemas: org.mate.desktop.keybindings.customN
+  local slots; slots="$(gsettings list-schemas 2>/dev/null | grep -oE 'org[.]mate[.]desktop[.]keybindings[.]custom[0-9]+')"
+  [ -z "$slots" ] && { warn "mate: no custom-keybinding schemas found"; return 1; }
+  # reuse our slot if present, else take the first free one
+  local sch="" cmd s
+  for s in $slots; do
+    cmd="$(gsettings get "$s" action 2>/dev/null)" || continue
+    if [ "$cmd" = "''" ] || [[ "$cmd" == *screen-ai* ]]; then sch="$s"; break; fi
+  done
+  [ -z "$sch" ] && { warn "mate: no free custom-keybinding slot"; return 1; }
+  gsettings set "$sch" name "Screen AI" || return 1
+  gsettings set "$sch" action "$BIN_ABS --toggle" || return 1
+  gsettings set "$sch" binding "$MATE_KEY" || return 1
+  receipt_set MATE_SLOT "${sch##*.}"
+  ok "mate: $MATE_KEY → toggle"
+}
+
+restart_kglobalaccel() {
+  if have systemctl; then
+    systemctl --user try-restart plasma-kglobalaccel.service >/dev/null 2>&1 && return 0
+  fi
+  # non-systemd fallback: bounce the daemon so it re-reads kglobalshortcutsrc
+  if have kquitapp6; then kquitapp6 kglobalacceld >/dev/null 2>&1; sleep 0.5
+  elif have kquitapp5; then kquitapp5 kglobalaccel5 >/dev/null 2>&1; sleep 0.5
+  elif have killall; then killall kglobalacceld kglobalaccel5 >/dev/null 2>&1; sleep 0.5; fi
+  local d
+  for d in /usr/lib/kglobalacceld /usr/libexec/kglobalacceld /usr/lib/kglobalaccel5 /usr/libexec/kglobalaccel5; do
+    if [ -x "$d" ]; then (nohup "$d" >/dev/null 2>&1 &); return 0; fi
+  done
+  have kglobalacceld && { (nohup kglobalacceld >/dev/null 2>&1 &); return 0; }
+  return 1
 }
 
 bind_plasma() {
-  local kw=""; have kwriteconfig6 && kw=kwriteconfig6; [ -z "$kw" ] && have kwriteconfig5 && kw=kwriteconfig5
+  local kw=""
+  have kwriteconfig6 && kw=kwriteconfig6
+  [ -z "$kw" ] && have kwriteconfig5 && kw=kwriteconfig5
   mkdir -p "$HOME/.local/share/applications"
   cat >"$HOME/.local/share/applications/screen-ai-toggle.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Screen AI
-Comment=Ask AI about your screen
-Exec=screen-ai --toggle
+Comment=Ask AI about your screen (managed by the Screen AI installer)
+Exec=$BIN_ABS --toggle
 Icon=screen-ai
 Terminal=false
 Categories=Utility;
+NoDisplay=true
+StartupWMClass=screen-ai
 X-KDE-GlobalAccel-CommandShortcut=true
 EOF
-  [ -z "$kw" ] && { warn "kwriteconfig not found — set the shortcut in System Settings → Shortcuts (command: screen-ai --toggle)"; return 1; }
-  $kw --file kglobalshortcutsrc --group services --group screen-ai-toggle.desktop --key _launch "$KDE_KEY,none,Screen AI"
-  (systemctl --user restart plasma-kglobalaccel.service >/dev/null 2>&1 || true)
-  ok "plasma: $KDE_KEY → screen-ai (log out/in if it does not respond)"
+  [ -z "$kw" ] && { warn "plasma: kwriteconfig not found — set the shortcut in System Settings → Shortcuts (command: $BIN_ABS --toggle)"; return 1; }
+  if [ -f "$HOME/.config/kglobalshortcutsrc" ]; then
+    local clash; clash="$(grep -F "$KDE_KEY" "$HOME/.config/kglobalshortcutsrc" | grep -v 'screen-ai' | head -n1)"
+    [ -n "$clash" ] && warn "plasma: $KDE_KEY already used — change it in System Settings → Shortcuts if needed"
+  fi
+  # NOTE: Plasma 6 wants the BARE shortcut here — not the old "shortcut,default,name" triple.
+  "$kw" --file kglobalshortcutsrc --group services --group screen-ai-toggle.desktop --key _k_friendly_name "Screen AI"
+  "$kw" --file kglobalshortcutsrc --group services --group screen-ai-toggle.desktop --key _launch "$KDE_KEY"
+  restart_kglobalaccel || warn "plasma: couldn't refresh the shortcut daemon — log out/in once"
+  ok "plasma: $KDE_KEY → toggle (verify in System Settings → Shortcuts)"
 }
 
 bind_xfce() {
-  have xfconf-query || return 1
-  xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$XFCE_KEY" -n -t string -s "screen-ai --toggle"
-  ok "xfce: $XFCE_KEY → screen-ai"
+  have xfconf-query || { warn "xfce: xfconf-query not found"; return 1; }
+  # drop any stale screen-ai binding from a previous run (the key may have changed)
+  xfconf-query -c xfce4-keyboard-shortcuts -l -p /commands/custom 2>/dev/null | while IFS= read -r prop; do
+    v="$(xfconf-query -c xfce4-keyboard-shortcuts -p "$prop" 2>/dev/null)" || continue
+    [[ "$v" == *screen-ai* ]] && xfconf-query -c xfce4-keyboard-shortcuts -p "$prop" -r 2>/dev/null
+  done
+  xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/$XFCE_KEY" -n -t string -s "$BIN_ABS --toggle" || return 1
+  receipt_set XFCE_KEY "$XFCE_KEY"
+  ok "xfce: $XFCE_KEY → toggle"
 }
 
 write_autostart() {
@@ -528,9 +805,13 @@ write_autostart() {
 [Desktop Entry]
 Type=Application
 Name=Screen AI
-Exec=screen-ai
-X-GNOME-Autostart-enabled=true
+Exec=$BIN_ABS
+Icon=screen-ai
+Terminal=false
+Categories=Utility;
 NoDisplay=true
+StartupWMClass=screen-ai
+X-GNOME-Autostart-enabled=true
 EOF
 }
 
@@ -541,59 +822,125 @@ desktop_entry() {
 Type=Application
 Name=Screen AI
 Comment=Ask AI about your screen
-Exec=screen-ai --toggle
+Exec=$BIN_ABS --toggle
+Icon=screen-ai
 Terminal=false
 Categories=Utility;
+StartupWMClass=screen-ai
 EOF
   cat >"$HOME/.local/share/applications/screen-ai-settings.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Screen AI Settings
-Exec=screen-ai --settings
+Comment=Configure Screen AI providers and hotkeys
+Exec=$BIN_ABS --settings
+Icon=screen-ai
 Terminal=false
 Categories=Utility;Settings;
+StartupWMClass=screen-ai
 EOF
 }
 
-# convert_keys "Super+Shift+S" → per-compositor key strings
-convert_keys() {
-  local k="$1" key rest m
-  key="${k##*+}"; rest=""; [[ "$k" == *+* ]] && rest="${k%+*}"
-  local n_=() h_=() s_=() g_="" kd_=() x_=""
-  for m in ${rest//+/ }; do
-    case "$m" in
-      Super) n_+=(Mod);  h_+=(SUPER); s_+=(Mod4);  g_+="<Super>";   kd_+=(Meta); x_+="<Super>" ;;
-      Shift) n_+=(Shift); h_+=(SHIFT); s_+=(Shift); g_+="<Shift>";   kd_+=(Shift); x_+="<Shift>" ;;
-      Ctrl)  n_+=(Ctrl); h_+=(CTRL);  s_+=(Ctrl);  g_+="<Control>"; kd_+=(Ctrl); x_+="<Primary>" ;;
-      Alt)   n_+=(Alt);  h_+=(ALT);   s_+=(Mod1);  g_+="<Alt>";     kd_+=(Alt);  x_+="<Alt>" ;;
-    esac
-  done
-  local low; low="$(echo "$key" | tr 'A-Z' 'a-z')"
-  local IFS_OLD="$IFS"; IFS='+'
-  NIRI_KEY="${n_[*]}+$key"; SWAY_KEY="${s_[*]}+$low"; KDE_KEY="${kd_[*]}+$key"
-  IFS=' '; HYPR_MODS="${h_[*]}"; IFS="$IFS_OLD"
-  HYPR_KEY="$(echo "$key" | tr a-z A-Z)"; GNOME_KEY="$g_$low"; XFCE_KEY="$x_$low"
+install_icon() {
+  local png_dir="$HOME/.local/share/icons/hicolor/512x512/apps"
+  local svg_dir="$HOME/.local/share/icons/hicolor/scalable/apps"
+  mkdir -p "$png_dir" "$svg_dir"
+  local png_src="" svg_src="" tmp=""
+  # repo checkout / --from-source: use the assets next to this script
+  case "$0" in */*)
+    [ -f "${0%/*}/assets/icon.png" ] && png_src="${0%/*}/assets/icon.png"
+    [ -f "${0%/*}/assets/icon.svg" ] && svg_src="${0%/*}/assets/icon.svg" ;;
+  esac
+  if { [ -z "$png_src" ] || [ -z "$svg_src" ]; } && have curl; then
+    tmp="$(mktemp -d -t screen-ai-icon.XXXXXX 2>/dev/null || true)"
+    if [ -n "$tmp" ]; then
+      [ -z "$png_src" ] && curl -fsSL --max-time 20 "https://raw.githubusercontent.com/$REPO/main/assets/icon.png" -o "$tmp/icon.png" 2>/dev/null && [ -s "$tmp/icon.png" ] && png_src="$tmp/icon.png"
+      [ -z "$svg_src" ] && curl -fsSL --max-time 20 "https://raw.githubusercontent.com/$REPO/main/assets/icon.svg" -o "$tmp/icon.svg" 2>/dev/null && [ -s "$tmp/icon.svg" ] && svg_src="$tmp/icon.svg"
+    fi
+  fi
+  if [ -n "$png_src" ] || [ -n "$svg_src" ]; then
+    [ -n "$png_src" ] && cp -f "$png_src" "$png_dir/screen-ai.png" 2>/dev/null
+    [ -n "$svg_src" ] && cp -f "$svg_src" "$svg_dir/screen-ai.svg" 2>/dev/null
+    ok "installed app icon"
+    have gtk-update-icon-cache && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+  else
+    note "couldn't fetch the app icon (cosmetic only)"
+  fi
+  [ -n "$tmp" ] && rm -rf "$tmp"
+  return 0
+}
+
+# Which environments to configure: the current session, plus any file-based
+# compositor the user clearly uses (existing config) even when not current.
+# Live desktop settings (GNOME/Plasma/XFCE/…) are only touched when current.
+detect_targets() {
+  TARGETS=""
+  add_target() { case " $TARGETS " in *" $1 "*) ;; *) TARGETS="$TARGETS $1";; esac; }
+  case "$WM" in
+    niri|hyprland|sway|i3|river|plasma|gnome|cinnamon|mate|xfce) add_target "$WM" ;;
+  esac
+  resolve_niri_cfg >/dev/null 2>&1 && add_target niri
+  resolve_hypr_cfg >/dev/null 2>&1 && add_target hyprland
+  resolve_sway_cfg >/dev/null 2>&1 && add_target sway
+  resolve_i3_cfg >/dev/null 2>&1 && add_target i3
+  [ -f "$CFGXDG/river/init" ] && add_target river
+  TARGETS="${TARGETS# }"
+}
+
+print_manual_keys() {
+  case "$WM" in
+    labwc) note "labwc: add a <keybind> to ~/.config/labwc/rc.xml running: $BIN_ABS --toggle" ;;
+    wayfire) note "wayfire: Wayfire Config Manager → Commands → bind a key to: $BIN_ABS --toggle" ;;
+    *) warn "unknown compositor ($WM) — bind a key to this command by hand: $BIN_ABS --toggle" ;;
+  esac
 }
 
 setup_keybinding() {
-  local keys=("Super+Shift+S" "Super+Space" "Ctrl+Alt+Space" "Super+Shift+A" "Alt+Space")
-  choose "Shortcut to summon the overlay?" "${keys[@]}"
-  local k="${keys[$CHOICE]}"
-  convert_keys "$k"
+  local keys=("Super+Shift+s" "Super+Shift+Space" "Ctrl+Alt+p" "Alt+Space")
+  local labels=()
+  local k
+  for k in "${keys[@]}"; do labels+=("$k"); done
+  labels+=("Skip (no shortcut)")
+  local -a key_opts=()
+  for k in "${keys[@]}"; do key_opts+=("$k" ""); done
+  key_opts+=("none" "Skip (no shortcut)")
+  local sel
+  sel="$(choose "Pick a global shortcut" "${key_opts[@]}")"
+  [ "$sel" = none ] && { note "skipped global shortcut"; return 0; }
+  convert_keys "$sel"
 
+  detect_targets
+  local t done_=""
+  if [ -n "$TARGETS" ]; then
+    note "configuring: $TARGETS"
+    for t in $TARGETS; do
+      case "$t" in
+        niri)     if bind_niri; then done_="$done_ niri"; fi ;;
+        hyprland) if bind_hyprland; then done_="$done_ hyprland"; fi ;;
+        sway)     if bind_sway; then done_="$done_ sway"; fi ;;
+        i3)       if bind_i3; then done_="$done_ i3"; fi ;;
+        river)    if bind_river; then done_="$done_ river"; fi ;;
+        plasma)   if bind_plasma; then done_="$done_ plasma"; fi ;;
+        gnome)    if bind_gnome; then done_="$done_ gnome"; fi ;;
+        cinnamon) if bind_cinnamon; then done_="$done_ cinnamon"; fi ;;
+        mate)     if bind_mate; then done_="$done_ mate"; fi ;;
+        xfce)     if bind_xfce; then done_="$done_ xfce"; fi ;;
+      esac
+    done
+  fi
   case "$WM" in
-    niri)     bind_niri ;;
-    hyprland) bind_hyprland ;;
-    sway)     bind_sway ;;
-    i3)       bind_i3; write_autostart ;;
-    gnome|cinnamon|mate|budgie) bind_gnome && write_autostart ;;
-    plasma)   bind_plasma; write_autostart ;;
-    xfce)     bind_xfce; write_autostart ;;
-    *)
-      write_autostart
-      if [ "$SESSION" = x11 ]; then ok "x11: the app registers Super+Shift+S / Ctrl+Alt+Space itself"
-      else warn "unknown Wayland compositor — bind a key to: screen-ai --toggle"; fi ;;
+    labwc|wayfire|wlroots|other)
+      if [ "$SESSION" = x11 ]; then
+        ok "x11: the app registers its own shortcuts (Super+Shift+S / Ctrl+Alt+Space)"
+      else
+        print_manual_keys
+      fi
+      ;;
   esac
+  done_="${done_# }"
+  receipt_set TARGETS "$done_"
+  receipt_set SHORTCUT "$sel"
+  write_autostart
 }
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -631,6 +978,7 @@ main() {
   if have curl; then curl -fsSL "https://raw.githubusercontent.com/$REPO/main/uninstall.sh" -o "$SHARE_DIR/uninstall.sh" 2>/dev/null \
     && chmod +x "$SHARE_DIR/uninstall.sh" && ln -sf "$SHARE_DIR/uninstall.sh" "$BIN_DIR/screen-ai-uninstall"; fi
   desktop_entry
+  install_icon
 
   if [ "$NO_SETUP" -eq 0 ]; then
     step "Setup"
