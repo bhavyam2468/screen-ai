@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowUp, Settings2, Loader2 } from "lucide-react";
 import ChatPanel, { Msg } from "./ChatPanel";
 import SettingsPanel from "./SettingsPanel";
@@ -43,7 +43,7 @@ function Reveal({ children, instant }: { children: React.ReactNode; instant: boo
       initial={{ height: 0, opacity: 0 }}
       animate={{ height: h, opacity: 1 }}
       exit={{ height: 0, opacity: 0 }}
-      transition={{ duration: instant ? 0 : 0.34, ease: EASE }}
+      transition={{ duration: instant ? 0 : 0.24, ease: EASE }}
       className="overflow-hidden"
     >
       <div ref={inner}>{children}</div>
@@ -56,12 +56,7 @@ export default function Dock(p: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const opacity = (p.settings.bg_opacity ?? 100) / 100;
-  const reduced = useMemo(
-    () =>
-      typeof window !== "undefined" &&
-      !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
-    []
-  );
+  const reduced = useReducedMotion() ?? false;
 
   // Keep the compositor's input region glued to the card: everything outside
   // it passes clicks through to the apps underneath.
@@ -125,19 +120,18 @@ export default function Dock(p: Props) {
   return (
     <motion.div
       ref={cardRef}
-      initial={{ opacity: 0, y: 26, scale: 0.96, filter: "blur(6px)" }}
-      animate={{ opacity: 1, y: 0, scale: 1, filter: "blur(0px)" }}
+      initial={reduced ? false : { opacity: 0, y: 10, scale: 0.985 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{
         opacity: 0,
-        y: 18,
-        scale: 0.97,
-        filter: "blur(4px)",
-        transition: { duration: reduced ? 0 : 0.18, ease: EASE },
+        y: 7,
+        scale: 0.99,
+        transition: { duration: reduced ? 0 : 0.15, ease: EASE },
       }}
-      transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 380, damping: 32 }}
+      transition={reduced ? { duration: 0 } : { duration: 0.22, ease: EASE }}
       onAnimationComplete={() => pushRegion.current()}
-      style={{ backgroundColor: `rgba(${p.dark ? "34,36,42" : "247,247,249"},${opacity})` }}
-      className="dock-card pointer-events-auto w-[540px] max-w-[calc(100vw-24px)] rounded-xl border border-white/15 shadow-2xl overflow-hidden"
+      style={{ backgroundColor: `rgba(${p.dark ? "21,31,45" : "250,252,255"},${opacity})` }}
+      className="dock-card pointer-events-auto w-[540px] max-w-[calc(100vw-24px)] rounded-2xl border border-white/15 shadow-[0_24px_80px_-28px_rgba(4,10,20,0.76)] overflow-hidden"
     >
       <AnimatePresence initial={false}>
       {open && (
@@ -148,7 +142,7 @@ export default function Dock(p: Props) {
             initial={reduced ? false : { opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={reduced ? { opacity: 0 } : { opacity: 0, y: -8 }}
-            transition={{ duration: reduced ? 0 : 0.18, ease: EASE }}
+            transition={{ duration: reduced ? 0 : 0.16, ease: EASE }}
           >
             {p.panel === "settings" ? (
               <SettingsPanel settings={p.settings} onSave={p.onSaveSettings} onClose={p.onCloseSettings} />
@@ -182,7 +176,7 @@ export default function Dock(p: Props) {
               draggable={false}
               initial={reduced ? false : { scale: 0.5, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              transition={{ type: "spring", stiffness: 500, damping: 28 }}
+              transition={reduced ? { duration: 0 } : { duration: 0.18, ease: EASE }}
               className="w-full h-full object-cover"
             />
           ) : (
@@ -198,12 +192,14 @@ export default function Dock(p: Props) {
             if (e.key === "Enter") submit();
           }}
           placeholder={p.messages.length ? "Ask a follow-up…" : "Ask about your screen…"}
+          aria-label="Ask a question about your screen"
           spellCheck={false}
           className="flex-1 bg-transparent text-[13px] placeholder:text-white/30 text-white"
         />
 
         <button
           onClick={p.onToggleSettings}
+          aria-label={p.panel === "settings" ? "Close settings" : "Open settings"}
           className={`relative p-1 rounded-md transition-colors duration-150 ${
             p.panel === "settings" ? "text-white" : "text-white/40 hover:text-white"
           }`}
@@ -217,8 +213,11 @@ export default function Dock(p: Props) {
         <motion.button
           onClick={submit}
           disabled={!canSend}
-          whileTap={reduced ? undefined : { scale: 0.8 }}
-          className="p-1 rounded-md text-white/40 hover:text-white disabled:opacity-25 disabled:hover:text-white/40 transition-colors duration-150"
+          whileTap={reduced ? undefined : { scale: 0.96 }}
+          aria-label="Send prompt"
+          className={`p-1.5 rounded-lg flex items-center justify-center transition-colors duration-150 disabled:opacity-35 ${
+            canSend ? "bg-blue-400 text-slate-950 hover:bg-blue-300" : "text-white/40"
+          }`}
         >
           <ArrowUp size={16} strokeWidth={2.4} />
         </motion.button>

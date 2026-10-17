@@ -1,59 +1,29 @@
-# Updates: push-to-release
+# Source-first releases and updates
 
-There is no manual release process. CI builds every push:
+Screen AI is distributed as source. GitHub contains the application source and lockfiles; it does not build or publish a default Linux executable. Users compile the application locally through `install.sh`, `setup.sh`, or the in-app source updater.
 
-- push to `main` → builds → republishes the **`v1-continuous`** release (stable)
-- push to any other branch → builds → republishes **`continuous-beta`** (prerelease)
+## CI policy
 
-## Versions
+`.github/workflows/continuous.yml` checks shell syntax, whitespace, tracked build output, and JavaScript lockfile installation. It deliberately does not run the frontend/native build, upload artifacts, or create rolling binary releases. Generated output such as `dist/` and `src-tauri/target/` must not be committed.
 
-Versions are git-based: **`v1.<short-sha>`**, e.g. `v1.3716db4`. The commit SHA
-plus its timestamp are embedded at compile time (see `src-tauri/build.rs`);
-`Cargo.toml`'s `1.0.0` is scaffolding for the major line only. An update is
-offered whenever a rolling release points at a strictly newer commit than the
-running build.
+## Version identity
 
-## Changelog
+The local build embeds `v1.<short-sha>` (and a `+dirty` suffix when built from a modified checkout) in `src-tauri/build.rs`. Settings checks the public `main` commit and reports whether it differs from the installed revision.
 
-The release notes are the built commit's subject + body, followed by a machine
-footer the updater parses (invisible on GitHub, which renders it as a comment):
+## User update path
 
-```
-<subject>
+The installer places a source updater at `screen-ai-update` and the Settings panel invokes that helper. It fetches the `main` source, runs `npm ci`, builds the frontend and then runs a locked Cargo release build on the user’s machine. The completed executable is staged beside the install path and atomically renamed into place. Settings and compositor config are not changed. The app asks for a restart after success.
 
-<body>
+The helper can also be run directly:
 
-<!-- screen-ai-build -->
-sha: <full sha>
-time: <unix commit time>
-branch: <branch>
+```bash
+screen-ai-update
+# or, from a checkout:
+bash ./install.sh
 ```
 
-Write commit messages for end users — they show up in-app on the update card.
+A source build requires Git, Node.js 18+, npm, Cargo/Rust, and the native GTK/WebKitGTK development libraries. The install script handles common package managers and gives manual instructions when it cannot identify a package map.
 
-## Beta
+## Previous binary releases
 
-A beta is offered only while its branch is genuinely ahead of `main` (checked
-live via the compare API) and only when it is newer than both the running
-build and stable. If several branches move, beta tracks the most recently
-pushed one.
-
-## Installers
-
-`install.sh` pulls the stable tarball directly, bypassing "latest":
-
-```
-releases/download/v1-continuous/screen-ai-x86_64-linux.tar.gz (+ .sha256)
-```
-
-## Bootstrap note
-
-The stable tag is deliberately named `v1-continuous`, not `continuous`:
-pre-1.0 updaters normalize any `v1*` tag to `1.0.0`, which reads as newer than
-`0.x` — so their last old-style update carries them onto this pipeline. Do
-not rename the tag.
-
-## If CI is red
-
-Failed builds publish nothing; the updater keeps offering the last good one.
-Check the Actions tab, fix forward, push again.
+Older rolling release assets may still exist on GitHub for historical reasons. The current installer and in-app updater do not discover or install those binaries; new updates are built from source locally. Do not restore a workflow that attaches compiled app executables to the default GitHub distribution path without changing this policy and the updater together.

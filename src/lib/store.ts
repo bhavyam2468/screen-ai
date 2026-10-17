@@ -164,33 +164,30 @@ export async function setInteractiveRegions(regions: InteractiveRect[]): Promise
   }
 }
 
-export interface UpdateOffer {
-  version: string;
-  sha: string;
-  committed_at: number;
-  branch: string;
-  changelog: string;
-  download_url: string;
-  checksum_url: string;
-}
-
 export interface UpdateStatus {
   current_version: string;
   current_sha: string;
-  stable: UpdateOffer | null;
-  beta: UpdateOffer | null;
+  update_available: boolean;
+  latest_sha: string;
+  latest_message: string;
 }
 
 export async function checkForUpdates(): Promise<UpdateStatus> {
   if (!inTauri) {
-    return { current_version: "v1.local", current_sha: "local", stable: null, beta: null };
+    return {
+      current_version: "v1.local",
+      current_sha: "local",
+      update_available: false,
+      latest_sha: "local",
+      latest_message: "",
+    };
   }
   return await invoke<UpdateStatus>("check_for_updates");
 }
 
-export async function installUpdate(downloadUrl: string, checksumUrl: string): Promise<string> {
-  if (!inTauri) return "Mock update installed";
-  return await invoke<string>("install_update", { downloadUrl, checksumUrl });
+export async function updateFromSource(): Promise<string> {
+  if (!inTauri) throw new Error("Source updates are available in the installed Linux app.");
+  return await invoke<string>("update_from_source");
 }
 
 export async function restartApp(): Promise<void> {

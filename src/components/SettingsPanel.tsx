@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   X,
   Check,
@@ -23,9 +23,8 @@ import {
   quitApp,
   fetchModels,
   checkForUpdates,
-  installUpdate,
+  updateFromSource,
   restartApp,
-  UpdateOffer,
   UpdateStatus,
 } from "../lib/store";
 
@@ -50,93 +49,9 @@ const THEMES: { id: ThemeMode; icon: typeof Moon; label: string }[] = [
 // Safety classifiers (Llama Guard & co) answer "safe"/"unsafe" instead of chatting.
 const NOT_CHAT = /guard|moderat|safety|shield|classif/i;
 
-const LABEL = "text-[10px] uppercase tracking-[0.2em] text-white/40 mb-1.5 font-semibold";
+const LABEL = "text-[10.5px] uppercase tracking-[0.14em] text-white/45 mb-1.5 font-semibold";
 const FIELD =
   "w-full rounded-lg bg-neutral-800 border border-white/10 px-3 py-2 text-[13px] placeholder:text-white/25 text-white focus:border-white/30 transition-colors";
-
-function ago(unix: number): string {
-  const s = Math.max(0, Math.floor(Date.now() / 1000) - unix);
-  if (s < 90) return "just now";
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 48) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
-
-function UpdateCard({
-  offer,
-  tone,
-  busy,
-  working,
-  done,
-  onUpdate,
-  onRestart,
-  error,
-}: {
-  offer: UpdateOffer;
-  tone: "stable" | "beta";
-  busy: boolean;
-  working: boolean;
-  done: boolean;
-  onUpdate: () => void;
-  onRestart: () => void;
-  error: string | null;
-}) {
-  const beta = tone === "beta";
-  const [subject, ...rest] = offer.changelog.split("\n");
-  const body = rest.join("\n").trim();
-  return (
-    <div
-      className={`mt-2.5 p-3 rounded-lg bg-neutral-900 border space-y-2 ${
-        beta ? "border-violet-400/30" : "border-amber-500/30"
-      }`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-[12.5px] font-semibold text-white font-mono">{offer.version}</span>
-        <span className="text-[10px] text-white/40 shrink-0">
-          {beta && <span className="text-violet-300 font-mono">{offer.branch} · </span>}
-          {ago(offer.committed_at)}
-        </span>
-      </div>
-      {subject && <p className="text-[12px] font-medium text-white/85 leading-snug">{subject}</p>}
-      {body && (
-        <p className="text-[11px] text-white/60 line-clamp-3 leading-relaxed whitespace-pre-wrap">
-          {body}
-        </p>
-      )}
-      {done ? (
-        <button
-          type="button"
-          onClick={onRestart}
-          className="w-full mt-1 py-1.5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors"
-        >
-          <RefreshCw size={12} /> Restart App to Apply
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={onUpdate}
-          disabled={busy}
-          className="w-full mt-1 py-1.5 rounded-md bg-white hover:bg-neutral-200 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
-        >
-          {working ? (
-            <>
-              <RefreshCw size={12} className="animate-spin" />
-              <span>Downloading & Installing…</span>
-            </>
-          ) : (
-            <>
-              <Download size={12} />
-              <span>{beta ? `Try beta ${offer.version}` : `Update to ${offer.version}`}</span>
-            </>
-          )}
-        </button>
-      )}
-      {error && <p className="text-[11px] text-rose-400 mt-1">{error}</p>}
-    </div>
-  );
-}
 
 export default function SettingsPanel({ settings, onSave, onClose }: Props) {
   const [draft, setDraft] = useState<Settings>({ ...settings });
@@ -148,9 +63,10 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
 
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
-  const [updatingChannel, setUpdatingChannel] = useState<"stable" | "beta" | null>(null);
+  const [updatingSource, setUpdatingSource] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateSuccess, setUpdateSuccess] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
 
   useEffect(() => {
     checkUpdates();
@@ -169,17 +85,18 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
     }
   };
 
-  const triggerUpdate = async (offer: UpdateOffer, channel: "stable" | "beta") => {
-    if (!offer?.download_url) return;
-    setUpdatingChannel(channel);
+  const triggerUpdate = async () => {
+    setUpdatingSource(true);
     setUpdateError(null);
+    setUpdateMessage(null);
     try {
-      await installUpdate(offer.download_url, offer.checksum_url ?? "");
+      const message = await updateFromSource();
+      setUpdateMessage(message);
       setUpdateSuccess(true);
     } catch (err) {
       setUpdateError(String(err));
     } finally {
-      setUpdatingChannel(null);
+      setUpdatingSource(false);
     }
   };
 
@@ -229,13 +146,15 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
         <div className="flex items-center gap-0.5">
           <button
             onClick={() => quitApp()}
-            className="w-6 h-6 rounded-md flex items-center justify-center text-white/40 hover:text-rose-400 transition-colors"
+            aria-label="Quit Screen AI"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-white/45 hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
           >
             <Power size={13} />
           </button>
           <button
             onClick={onClose}
-            className="w-6 h-6 rounded-md flex items-center justify-center text-white/40 hover:text-white transition-colors"
+            aria-label="Close settings"
+            className="w-7 h-7 rounded-lg flex items-center justify-center text-white/45 hover:text-white hover:bg-white/5 transition-colors"
           >
             <X size={14} />
           </button>
@@ -274,7 +193,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
                 spellCheck={false}
                 className="flex-1 bg-transparent text-[13px] placeholder:text-white/25 text-white"
               />
-              <button onClick={() => setShowKey(!showKey)} className="text-white/30 hover:text-white transition-colors">
+              <button onClick={() => setShowKey(!showKey)} aria-label={showKey ? "Hide API key" : "Show API key"} className="text-white/35 hover:text-white transition-colors">
                 {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
               </button>
             </div>
@@ -405,67 +324,90 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
           </div>
         </div>
 
-        <div className="pt-2 border-t border-white/10">
-          <div className="flex items-center justify-between">
-            <div>
+        <div className="pt-3 border-t border-white/10">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
               <p className={LABEL}>Updates</p>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[12px] text-white/90 font-mono">
-                  {updateStatus?.current_version || "v1.local"}
+                  {updateStatus?.current_version || (checkingUpdate ? "Checking…" : "Version unavailable")}
                 </span>
-                {updateStatus?.stable ? (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                    Stable update
-                  </span>
-                ) : updateStatus?.beta ? (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-violet-400/10 text-violet-300 border border-violet-400/30">
-                    Beta available
-                  </span>
-                ) : (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-white/5 text-white/50 border border-white/10">
-                    Up to date
-                  </span>
-                )}
+                <span
+                  className={`px-1.5 py-0.5 rounded text-[10px] border ${
+                    updateStatus?.update_available
+                      ? "bg-amber-500/15 text-amber-300 border-amber-500/25"
+                      : "bg-white/5 text-white/50 border-white/10"
+                  }`}
+                >
+                  {updateStatus?.update_available
+                    ? "Update available"
+                    : updateStatus
+                    ? "Up to date"
+                    : checkingUpdate
+                    ? "Checking source"
+                    : "Source status unavailable"}
+                </span>
               </div>
             </div>
             <button
               type="button"
               onClick={checkUpdates}
-              disabled={checkingUpdate || updatingChannel !== null}
-              className="px-2.5 py-1.5 rounded-lg bg-neutral-800 border border-white/10 hover:border-white/25 text-[11px] text-white/70 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50"
+              disabled={checkingUpdate || updatingSource}
+              aria-label="Check for source updates"
+              className="shrink-0 px-2.5 py-1.5 rounded-lg bg-neutral-800 border border-white/10 hover:border-white/25 text-[11px] text-white/70 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50"
             >
               <RefreshCw size={11} className={checkingUpdate ? "animate-spin text-white" : ""} />
-              <span>{checkingUpdate ? "Checking…" : "Check now"}</span>
+              <span>{checkingUpdate ? "Checking…" : "Check"}</span>
             </button>
           </div>
 
-          {updateStatus?.stable && (
-            <UpdateCard
-              offer={updateStatus.stable}
-              tone="stable"
-              busy={updatingChannel !== null}
-              working={updatingChannel === "stable"}
-              done={updateSuccess}
-              onUpdate={() => updateStatus.stable && triggerUpdate(updateStatus.stable, "stable")}
-              onRestart={doRestart}
-              error={updateError}
-            />
+          {updateStatus?.update_available && (
+            <div className="mt-2 p-2.5 rounded-lg bg-amber-400/[0.06] border border-amber-300/10">
+              <p className="text-[11px] text-white/75 leading-relaxed break-words" title={updateStatus.latest_message}>
+                {updateStatus.latest_message}
+              </p>
+              <p className="mt-1 text-[10px] font-mono text-white/40">main · {updateStatus.latest_sha.slice(0, 8)}</p>
+            </div>
           )}
-          {updateStatus?.beta && (
-            <UpdateCard
-              offer={updateStatus.beta}
-              tone="beta"
-              busy={updatingChannel !== null}
-              working={updatingChannel === "beta"}
-              done={updateSuccess}
-              onUpdate={() => updateStatus.beta && triggerUpdate(updateStatus.beta, "beta")}
-              onRestart={doRestart}
-              error={updateError}
-            />
+
+          {updateSuccess ? (
+            <div className="mt-2.5 space-y-2">
+              <p className="text-[11px] text-emerald-300">Build complete. Restart Screen AI to apply it.</p>
+              <button
+                type="button"
+                onClick={doRestart}
+                aria-live="polite"
+                className="w-full py-2 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-neutral-950 font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <RefreshCw size={12} /> Restart app
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={triggerUpdate}
+              disabled={checkingUpdate || updatingSource}
+              aria-live="polite"
+              className="w-full mt-2.5 py-2 rounded-lg bg-white hover:bg-neutral-200 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+            >
+              {updatingSource ? (
+                <>
+                  <RefreshCw size={12} className="animate-spin" />
+                  <span>Building from source on this device…</span>
+                </>
+              ) : (
+                <>
+                  <Download size={12} />
+                  <span>{updateStatus?.update_available ? "Build & install update" : "Rebuild latest source"}</span>
+                </>
+              )}
+            </button>
           )}
-          {updateError && !updateStatus?.stable && !updateStatus?.beta && (
-            <p className="text-[11px] text-rose-400 mt-2">{updateError}</p>
-          )}
+          <p className="mt-1.5 text-[10px] leading-relaxed text-white/35">
+            GitHub source is compiled locally. No prebuilt app binary is downloaded.
+          </p>
+          {updateMessage && <p className="text-[10px] text-emerald-300/80 mt-1">{updateMessage}</p>}
+          {updateError && <p className="text-[11px] text-rose-400 mt-2 break-words">{updateError}</p>}
         </div>
       </div>
 

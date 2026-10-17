@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { useEffect, useRef, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { X, Copy, Check, RotateCcw, ArrowDown } from "lucide-react";
@@ -105,7 +105,7 @@ function MsgIn({
       className={className}
       initial={reduced ? false : { opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "spring", stiffness: 420, damping: 34 }}
+      transition={reduced ? { duration: 0 } : { duration: 0.16, ease: "easeOut" }}
     >
       {children}
     </motion.div>
@@ -118,12 +118,7 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
   const pinnedRef = useRef(true);
   const [canUp, setCanUp] = useState(false);
   const [canDown, setCanDown] = useState(false);
-  const reduced = useMemo(
-    () =>
-      typeof window !== "undefined" &&
-      !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches,
-    []
-  );
+  const reduced = useReducedMotion() ?? false;
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -171,7 +166,7 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
       <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-2 shrink-0">
         <span className="relative flex w-1.5 h-1.5">
           {streaming && (
-            <span className="absolute inline-flex w-full h-full rounded-full bg-white opacity-70 animate-ping" />
+            <span className="absolute inline-flex w-full h-full rounded-full bg-blue-300/35" />
           )}
           <span
             className={`relative inline-flex w-1.5 h-1.5 rounded-full transition-colors duration-300 ${
@@ -182,16 +177,16 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
         <span className="text-[11px] text-white/40 truncate">{model}</span>
         <div className="flex-1" />
         {error && !streaming && (
-          <button onClick={onRetry} className={btn}>
+          <button onClick={onRetry} aria-label="Retry response" className={btn}>
             <RotateCcw size={13} />
           </button>
         )}
         {last && (
-          <button onClick={copy} className={btn}>
+          <button onClick={copy} aria-label="Copy latest response" className={btn}>
             {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
           </button>
         )}
-        <button onClick={onClose} className={btn}>
+        <button onClick={onClose} aria-label="Close chat" className={btn}>
           <X size={14} />
         </button>
       </div>
@@ -248,7 +243,7 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
             initial={{ opacity: 0, y: 8, x: "-50%" }}
             animate={{ opacity: 1, y: 0, x: "-50%" }}
             exit={{ opacity: 0, y: 8, x: "-50%" }}
-            transition={{ duration: reduced ? 0 : 0.18 }}
+            transition={{ duration: reduced ? 0 : 0.16, ease: "easeOut" }}
             className="absolute bottom-2 left-1/2 w-7 h-7 rounded-full bg-neutral-800 border border-white/15 text-white/70 hover:text-white shadow-lg flex items-center justify-center"
           >
             <ArrowDown size={13} />

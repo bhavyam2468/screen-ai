@@ -35,7 +35,7 @@ export default function App() {
     getSystemTheme().then(setSysTheme).catch(() => {});
     checkForUpdates()
       .then((res) => {
-        if (res.stable) setHasUpdate(true);
+        if (res.update_available) setHasUpdate(true);
       })
       .catch(() => {});
   }, []);
@@ -184,7 +184,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
-    document.documentElement.style.setProperty("--accent", sysTheme.accent || (dark ? "#ffffff" : "#17171c"));
+    document.documentElement.style.setProperty("--accent", sysTheme.accent || (dark ? "#82adff" : "#3973d1"));
   }, [dark, sysTheme.accent]);
 
   const align =

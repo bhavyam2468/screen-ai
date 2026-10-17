@@ -1,90 +1,39 @@
-name: continuous
+name: source checks
 
-# Every push is a release: main republishes stable, any other branch
-# republishes beta. See RELEASE.md for the full picture.
 on:
   push:
     branches: ["**"]
-
-concurrency:
-  group: continuous-${{ github.ref_name }}
-  cancel-in-progress: true
+  pull_request:
+    branches: ["**"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
-    # Oldest baseline with webkit2gtk-4.1: the binary runs on more systems.
-    runs-on: ubuntu-22.04
+  source-only:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: System dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            build-essential curl wget file pkg-config \
-            libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev \
-            libgtk-layer-shell-dev \
-            patchelf libssl-dev libxdo-dev
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run build
+          node-version: 22
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Check installer shell syntax
+        run: bash -n install.sh setup.sh uninstall.sh update.sh
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Build
-        working-directory: src-tauri
-        run: cargo build --release
-
-      - name: Package
-        working-directory: src-tauri/target/release
+      - name: Check whitespace and tracked build output
         run: |
-          tar -czf screen-ai-x86_64-linux.tar.gz screen-ai
-          sha256sum screen-ai-x86_64-linux.tar.gz > screen-ai-x86_64-linux.tar.gz.sha256
-          tar -tzf screen-ai-x86_64-linux.tar.gz
+          git diff --check HEAD^ HEAD
+          if git ls-files | grep -E '^(dist|src-tauri/target|target)/'; then
+            echo "Generated application output must not be committed." >&2
+            exit 1
+          fi
 
-      - name: Publish rolling release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          SHA="$(git rev-parse HEAD)"
-          TIME="$(git log -1 --format=%ct)"
-          BRANCH="${GITHUB_REF_NAME:?}"
-          SUBJECT="$(git log -1 --format=%s)"
-          BODY="$(git log -1 --format=%b)"
-          if [ "$BRANCH" = "main" ]; then
-            TAG="v1-continuous"; TITLE="Stable — main"; EXTRA=""
-          else
-            TAG="continuous-beta"; TITLE="Beta — $BRANCH"; EXTRA="--prerelease"
-          fi
-          {
-            printf '%s\n\n%s\n\n' "$SUBJECT" "$BODY"
-            printf '<!-- screen-ai-build -->\n'
-            printf 'sha: %s\ntime: %s\nbranch: %s\n' "$SHA" "$TIME" "$BRANCH"
-          } > notes.md
-          git tag -f "$TAG" "$SHA"
-          git push -f origin "refs/tags/$TAG:refs/tags/$TAG"
-          # shellcheck disable=SC2086
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" \
-              src-tauri/target/release/screen-ai-x86_64-linux.tar.gz \
-              src-tauri/target/release/screen-ai-x86_64-linux.tar.gz.sha256 \
-              --clobber
-            gh release edit "$TAG" --title "$TITLE" --notes-file notes.md
-          else
-            gh release create "$TAG" \
-              src-tauri/target/release/screen-ai-x86_64-linux.tar.gz \
-              src-tauri/target/release/screen-ai-x86_64-linux.tar.gz.sha256 \
-              --title "$TITLE" --notes-file notes.md --target "$SHA" $EXTRA
-          fi
+      - name: Verify JavaScript lockfile without building
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+# This repository distributes source, not Linux binaries. The application is
+# compiled on the user's machine by install.sh or screen-ai-update.

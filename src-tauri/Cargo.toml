@@ -4,6 +4,7 @@ version = "1.0.0"
 description = "Invoke an AI overlay on your screen — screenshot + prompt, streaming reply bubble."
 authors = ["screen-ai"]
 edition = "2021"
+rust-version = "1.78"
 
 [build-dependencies]
 tauri-build = { version = "2" }

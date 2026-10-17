@@ -894,7 +894,7 @@ async fn ask_ai(
 // ─── Tray ────────────────────────────────────────────────────────────────────
 
 fn tray_icon_image() -> tauri::image::Image<'static> {
-    // 32px violet→cyan orb, generated — no asset file needed at runtime.
+    // 32px blue accent orb, generated — no asset file needed at runtime.
     let size = 32u32;
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
     for y in 0..size {
@@ -905,408 +905,143 @@ fn tray_icon_image() -> tauri::image::Image<'static> {
             let edge = (1.0 - d).clamp(0.0, 1.0);
             let alpha = (edge.powf(0.7) * 255.0) as u8;
             let t = x as f32 / 31.0;
-            let r = (139.0 + (34.0 - 139.0) * t) as u8;
-            let g = (92.0 + (211.0 - 92.0) * t) as u8;
-            let b = (246.0 + (238.0 - 246.0) * t) as u8;
+            let r = (57.0 + (130.0 - 57.0) * t) as u8;
+            let g = (115.0 + (173.0 - 115.0) * t) as u8;
+            let b = (209.0 + (255.0 - 209.0) * t) as u8;
             rgba.extend_from_slice(&[r, g, b, alpha]);
         }
     }
     tauri::image::Image::new_owned(rgba, size, size)
 }
 
-// ─── Updates ─────────────────────────────────────────────────────────────────
+// ─── Source updates ───────────────────────────────────────────────────────────
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct UpdateOffer {
-    pub version: String,
-    pub sha: String,
-    pub committed_at: i64,
-    pub branch: String,
-    pub changelog: String,
-    pub download_url: String,
-    pub checksum_url: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct UpdateStatus {
     pub current_version: String,
     pub current_sha: String,
-    pub stable: Option<UpdateOffer>,
-    pub beta: Option<UpdateOffer>,
+    pub update_available: bool,
+    pub latest_sha: String,
+    pub latest_message: String,
 }
 
-// Rolling releases (see .github/workflows/continuous.yml): every push to main
-// republishes the stable one, every push elsewhere the beta one. The stable
-// tag is deliberately shaped so pre-1.0 updaters read it as 1.0.0 > 0.x,
-// which bootstraps them onto this pipeline with one last old-style update.
-const RELEASE_STABLE_TAG: &str = "v1-continuous";
-const RELEASE_BETA_TAG: &str = "continuous-beta";
 const REPO_API: &str = "https://api.github.com/repos/bhavyam2468/screen-ai";
-const BUILD_FOOTER: &str = "\n<!-- screen-ai-build -->\n";
 
-/// Display version: v1.<short-sha> of the built commit.
 fn app_version() -> String {
     let sha = env!("SCREEN_AI_COMMIT");
     let dirty = env!("SCREEN_AI_DIRTY") == "1";
     format!("v1.{}{}", sha, if dirty { "+dirty" } else { "" })
 }
 
-fn app_commit_time() -> i64 {
-    env!("SCREEN_AI_COMMIT_TIME").parse::<i64>().unwrap_or(0)
-}
-
-fn short_sha(sha: &str) -> String {
-    sha.chars().take(7).collect()
-}
-
-/// Split a rolling-release body into (changelog, sha, time, branch).
-/// Without CI's machine footer we refuse to guess.
-fn parse_release_body(body: &str) -> Option<(String, String, i64, String)> {
-    let (changelog, footer) = body.split_once(BUILD_FOOTER)?;
-    let mut sha = String::new();
-    let mut time: i64 = 0;
-    let mut branch = String::new();
-    for line in footer.lines() {
-        let line = line.trim();
-        if let Some(v) = line.strip_prefix("sha:") {
-            sha = v.trim().to_string();
-        } else if let Some(v) = line.strip_prefix("time:") {
-            time = v.trim().parse::<i64>().unwrap_or(0);
-        } else if let Some(v) = line.strip_prefix("branch:") {
-            branch = v.trim().to_string();
-        }
-    }
-    if sha.is_empty() || time <= 0 {
-        return None;
-    }
-    Some((changelog.trim().to_string(), sha, time, branch))
-}
-
-/// Strictly newer commits only — equal means same commit.
-fn is_newer_offer(remote_time: i64, ours_time: i64) -> bool {
-    remote_time > ours_time
-}
-
-/// Beta is only interesting when newer than both our build and stable.
-fn beta_worth_showing(beta_time: i64, ours_time: i64, stable_time: Option<i64>) -> bool {
-    beta_time > ours_time && stable_time.map(|s| beta_time > s).unwrap_or(true)
-}
-
-async fn fetch_offer(
-    client: &reqwest::Client,
-    tag: &str,
-) -> Result<Option<UpdateOffer>, String> {
-    let url = format!("{REPO_API}/releases/tags/{tag}");
-    let res = client
-        .get(&url)
-        .header("User-Agent", "screen-ai")
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await
-        .map_err(|e| format!("Failed to contact GitHub: {e}"))?;
-    if res.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !res.status().is_success() {
-        return Err(format!("GitHub returned HTTP {}", res.status()));
-    }
-    let json: serde_json::Value = res
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse release info: {e}"))?;
-    let body = json["body"].as_str().unwrap_or("");
-    let Some((changelog, sha, time, branch)) = parse_release_body(body) else {
-        return Ok(None);
-    };
-    let mut download_url = String::new();
-    let mut tarball_name = String::new();
-    if let Some(assets) = json["assets"].as_array() {
-        for asset in assets {
-            if let Some(name) = asset["name"].as_str() {
-                if name.ends_with(".tar.gz") {
-                    if let Some(dl) = asset["browser_download_url"].as_str() {
-                        download_url = dl.to_string();
-                        tarball_name = name.to_string();
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    // No tarball (mid-publish): unusable release, treat as absent.
-    if download_url.is_empty() {
-        return Ok(None);
-    }
-    let mut checksum_url = String::new();
-    if let Some(assets) = json["assets"].as_array() {
-        let want_sidecar = format!("{tarball_name}.sha256");
-        for asset in assets {
-            let Some(name) = asset["name"].as_str() else {
-                continue;
-            };
-            if name == want_sidecar {
-                if let Some(dl) = asset["browser_download_url"].as_str() {
-                    checksum_url = dl.to_string();
-                    break;
-                }
-            }
-        }
-    }
-    if checksum_url.is_empty() {
-        checksum_url = format!("{download_url}.sha256");
-    }
-    Ok(Some(UpdateOffer {
-        version: format!("v1.{}", short_sha(&sha)),
-        sha,
-        committed_at: time,
-        branch,
-        changelog,
-        download_url,
-        checksum_url,
-    }))
-}
-
-/// True only while BRANCH has commits main doesn't, so a merged branch's
-/// leftover beta release is never offered.
-async fn branch_is_ahead(client: &reqwest::Client, branch: &str) -> bool {
-    if branch.is_empty() || branch == "main" {
-        return false;
-    }
-    let url = format!("{REPO_API}/compare/main...{branch}");
-    let Ok(res) = client
-        .get(&url)
-        .header("User-Agent", "screen-ai")
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await
-    else {
-        return false;
-    };
-    let Ok(json) = res.json::<serde_json::Value>().await else {
-        return false;
-    };
-    json["ahead_by"].as_u64().unwrap_or(0) > 0
-        && matches!(json["status"].as_str(), Some("ahead") | Some("diverged"))
+fn truncate_update_log(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(24);
+    lines[start..].join("\n")
 }
 
 #[tauri::command]
 async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateStatus, String> {
-    let ours_time = app_commit_time();
-    let ours_sha = env!("SCREEN_AI_COMMIT").to_string();
-
-    let stable = fetch_offer(&state.client, RELEASE_STABLE_TAG).await?;
-    let mut beta = fetch_offer(&state.client, RELEASE_BETA_TAG).await?;
-    if let Some(ref b) = beta {
-        if !branch_is_ahead(&state.client, &b.branch).await {
-            beta = None;
-        }
+    let response = state
+        .client
+        .get(format!("{REPO_API}/commits/main"))
+        .header("User-Agent", "screen-ai-source-updater")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("Could not check GitHub for source updates: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("GitHub returned HTTP {} while checking for updates", response.status()));
     }
-
-    let stable = stable.filter(|o| is_newer_offer(o.committed_at, ours_time));
-    let stable_time = stable.as_ref().map(|o| o.committed_at);
-    let beta = beta.filter(|o| beta_worth_showing(o.committed_at, ours_time, stable_time));
+    let json: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Could not read GitHub commit information: {e}"))?;
+    let latest_sha = json["sha"]
+        .as_str()
+        .ok_or_else(|| "GitHub did not return the latest source commit SHA".to_string())?
+        .to_string();
+    let latest_message = json["commit"]["message"]
+        .as_str()
+        .unwrap_or("Latest source revision")
+        .lines()
+        .next()
+        .unwrap_or("Latest source revision")
+        .to_string();
+    let current_sha = env!("SCREEN_AI_COMMIT").to_string();
+    let update_available = env!("SCREEN_AI_DIRTY") == "1"
+        || current_sha == "unknown"
+        || !latest_sha.to_ascii_lowercase().starts_with(&current_sha.to_ascii_lowercase());
 
     Ok(UpdateStatus {
         current_version: app_version(),
-        current_sha: ours_sha,
-        stable,
-        beta,
+        current_sha,
+        update_available,
+        latest_sha,
+        latest_message,
     })
 }
 
-/// Only GitHub-controlled hosts may serve self-update payloads.
-fn check_update_url(url: &str) -> Result<(), String> {
-    let rest = url
-        .strip_prefix("https://")
-        .ok_or_else(|| "Update URL must use https".to_string())?;
-    let host = rest.split('/').next().unwrap_or("").to_lowercase();
-    let host = host.split('@').next_back().unwrap_or("");
-    let host = host.split(':').next().unwrap_or("");
-    let ok = host == "github.com"
-        || host == "api.github.com"
-        || host == "objects.githubusercontent.com"
-        || host == "release-assets.githubusercontent.com"
-        || host.ends_with(".githubusercontent.com");
-    if ok {
-        Ok(())
-    } else {
-        Err(format!(
-            "Refusing to download update from untrusted host '{host}'"
-        ))
-    }
-}
-
-/// Compare downloaded bytes against the release's sha256 sidecar.
-/// A missing/unreadable sidecar warns but allows install (old releases predate
-/// checksums); a present-but-mismatched checksum is a hard failure.
-async fn verify_checksum(
-    client: &reqwest::Client,
-    checksum_url: &str,
-    bytes: &[u8],
-) -> Result<(), String> {
-    if checksum_url.trim().is_empty() {
-        eprintln!("screen-ai: no checksum published for this release, skipping verification");
-        return Ok(());
-    }
-    let res = client
-        .get(checksum_url)
-        .header("User-Agent", "screen-ai")
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch checksum: {e}"))?;
-    if !res.status().is_success() {
-        eprintln!(
-            "screen-ai: checksum sidecar unavailable (HTTP {}), skipping verification",
-            res.status()
-        );
-        return Ok(());
-    }
-    let text = res.text().await.unwrap_or_default();
-    // Formats: "<hex>" or "<hex>  <filename>" (sha256sum style).
-    let expected = text.split_whitespace().next().unwrap_or("").to_lowercase();
-    if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
-        eprintln!("screen-ai: checksum sidecar malformed, skipping verification");
-        return Ok(());
-    }
-    let actual = {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(bytes))
-    };
-    if actual != expected {
-        return Err(
-            "Checksum mismatch — update payload failed its integrity check, refusing to install"
-                .into(),
-        );
-    }
-    Ok(())
-}
-
 #[tauri::command]
-async fn install_update(
-    download_url: String,
-    checksum_url: String,
-    state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
-    if download_url.is_empty() {
-        return Err("Download URL is empty".into());
-    }
-    check_update_url(&download_url)?;
-    if !checksum_url.trim().is_empty() {
-        check_update_url(&checksum_url)?;
+async fn update_from_source() -> Result<String, String> {
+    let install_path = std::env::current_exe()
+        .map_err(|e| format!("Cannot locate the installed Screen AI executable: {e}"))?;
+    let updater = install_path
+        .parent()
+        .map(|bin_dir| bin_dir.join("screen-ai-update"))
+        .ok_or_else(|| "Cannot locate the installed Screen AI updater".to_string())?;
+    if !updater.is_file() {
+        return Err("The local source updater is missing. Re-run the Linux installer to install it.".into());
     }
 
-    let current_exe = std::env::current_exe().map_err(|e| format!("Cannot locate current executable: {e}"))?;
-    let home_bin = dirs::home_dir().map(|h| h.join(".local/bin/screen-ai"));
-    let target_path = if current_exe.exists() && current_exe.to_string_lossy().contains(".local/bin") {
-        current_exe.clone()
-    } else if let Some(ref hb) = home_bin {
-        if hb.exists() {
-            hb.clone()
-        } else {
-            current_exe.clone()
-        }
-    } else {
-        current_exe.clone()
-    };
-
-    let temp_dir = std::env::temp_dir().join(format!("screen-ai-update-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).map_err(|e| format!("Failed to create temp dir: {e}"))?;
-
-    let archive_path = temp_dir.join("update.tar.gz");
-    let resp = state
-        .client
-        .get(&download_url)
-        .header("User-Agent", "screen-ai")
-        .send()
-        .await
-        .map_err(|e| format!("Failed to download update: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Download failed with HTTP {}", resp.status()));
-    }
-
-    let bytes = resp.bytes().await.map_err(|e| format!("Failed to read response: {e}"))?;
-    if bytes.len() > 512 * 1024 * 1024 {
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        return Err("Update payload implausibly large, refusing to install".into());
-    }
-    if let Err(e) = verify_checksum(&state.client, &checksum_url, &bytes).await {
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        return Err(e);
-    }
-    std::fs::write(&archive_path, &bytes).map_err(|e| format!("Failed to save archive: {e}"))?;
-
-    // Inspect the listing before extracting: refuse anything but the binary.
-    let listing = std::process::Command::new("tar")
-        .args(["-tzf", archive_path.to_str().unwrap_or("")])
+    let output = tokio::process::Command::new("bash")
+        .arg(&updater)
+        .arg("--ref")
+        .arg("main")
+        .arg("--install-path")
+        .arg(&install_path)
         .output()
-        .map_err(|e| format!("Failed to list update archive: {e}"))?;
-    if !listing.status.success() {
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        return Err("Update archive is not a valid tarball".into());
+        .await
+        .map_err(|e| format!("Could not start the source updater: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let transcript = format!("{stdout}\n{stderr}");
+    if !output.status.success() {
+        let tail = truncate_update_log(&transcript);
+        return Err(if tail.trim().is_empty() {
+            format!("Source update failed with {}", output.status)
+        } else {
+            format!("Source update failed: {tail}")
+        });
     }
-    for entry in String::from_utf8_lossy(&listing.stdout).lines() {
-        let e = entry.trim().trim_start_matches("./");
-        if e.is_empty() || e == "." {
-            continue;
-        }
-        if e != "screen-ai" {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            return Err(format!("Update archive contains unexpected file '{e}', refusing to install"));
-        }
-    }
-
-    let status = std::process::Command::new("tar")
-        .args(["-xzf", archive_path.to_str().unwrap(), "-C", temp_dir.to_str().unwrap()])
-        .status()
-        .map_err(|e| format!("Failed to execute tar: {e}"))?;
-
-    if !status.success() {
-        return Err("tar extraction failed".into());
-    }
-
-    let new_binary = temp_dir.join("screen-ai");
-    if !new_binary.exists() {
-        return Err("Update package does not contain 'screen-ai' binary".into());
-    }
-
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(&new_binary, std::fs::Permissions::from_mode(0o755));
-
-    let parent = target_path.parent().unwrap_or(&temp_dir);
-    let staged = parent.join(format!(".screen-ai.new-{}", std::process::id()));
-    std::fs::copy(&new_binary, &staged).map_err(|e| format!("Failed to stage binary: {e}"))?;
-    let _ = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755));
-
-    std::fs::rename(&staged, &target_path).map_err(|e| {
-        let _ = std::fs::remove_file(&staged);
-        format!("Failed to install binary to {}: {e}", target_path.display())
-    })?;
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-
-    Ok(format!("Updated successfully to {}", target_path.display()))
+    Ok(format!("Built from GitHub source and installed at {}", install_path.display()))
 }
 
 #[tauri::command]
 fn restart_app() -> Result<(), String> {
     let current_exe = std::env::current_exe().map_err(|e| format!("Cannot locate current executable: {e}"))?;
-    let home_bin = dirs::home_dir().map(|h| h.join(".local/bin/screen-ai"));
-    let target_path = if let Some(ref hb) = home_bin {
-        if hb.exists() { hb.clone() } else { current_exe }
-    } else {
+    let target = if current_exe.exists() {
         current_exe
+    } else {
+        let display = current_exe.to_string_lossy();
+        let recovered = display.strip_suffix(" (deleted)").map(std::path::PathBuf::from);
+        recovered.filter(|path| path.is_file()).ok_or_else(|| {
+            "Updated binary could not be located; close Screen AI and launch it again from your app menu.".to_string()
+        })?
     };
 
-    std::process::Command::new(&target_path)
-        .arg("--toggle")
+    // Let this instance exit before the replacement enters the single-instance
+    // plugin. The executable path is passed as an argument, never interpolated
+    // into shell source, so paths containing spaces remain safe.
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg("sleep 0.4; exec \"$1\" --settings")
+        .arg("screen-ai-restart")
+        .arg(&target)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("Failed to launch updated binary: {e}"))?;
-
+        .map_err(|e| format!("Failed to schedule the updated app restart: {e}"))?;
     std::process::exit(0);
 }
 
@@ -1554,14 +1289,34 @@ fn main() {
                 })
                 .build(app.handle())?;
 
-            // In-app global hotkey only where the platform allows it (X11).
-            // On Wayland the user binds a system shortcut → `screen-ai --toggle`.
+            // Use in-app global shortcuts only as an X11 fallback when the
+            // current desktop/compositor does not provide a native binding.
+            // Installed sessions otherwise bind the configured command directly.
             let session = std::env::var("XDG_SESSION_TYPE")
                 .unwrap_or_default()
                 .to_lowercase();
             let is_wayland =
                 session == "wayland" || std::env::var("WAYLAND_DISPLAY").is_ok();
-            if !is_wayland {
+            let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+                .or_else(|_| std::env::var("DESKTOP_SESSION"))
+                .unwrap_or_default()
+                .to_lowercase();
+            let session_has_native_shortcuts = [
+                "gnome", "unity", "budgie", "plasma", "kde", "cinnamon", "mate", "xfce",
+                "i3", "sway", "river", "niri", "hypr",
+            ]
+            .iter()
+            .any(|name| desktop.contains(*name))
+                || [
+                    "NIRI_SOCKET",
+                    "HYPRLAND_INSTANCE_SIGNATURE",
+                    "SWAYSOCK",
+                    "I3SOCK",
+                    "RIVER_SOCKET",
+                ]
+                .iter()
+                .any(|name| std::env::var_os(*name).is_some());
+            if !is_wayland && !session_has_native_shortcuts {
                 use tauri_plugin_global_shortcut::{
                     Code, GlobalShortcutExt, Modifiers, Shortcut,
                 };
@@ -1592,48 +1347,10 @@ fn main() {
             set_interactive_regions,
             overlay_hidden,
             check_for_updates,
-            install_update,
+            update_from_source,
             restart_app,
             get_system_theme
         ])
         .run(tauri::generate_context!())
         .expect("error while running screen-ai");
-}
-
-#[cfg(test)]
-mod update_tests {
-    use super::*;
-
-    #[test]
-    fn footer_parses() {
-        let body = "Fix the thing\n\nLonger explanation.\n<!-- screen-ai-build -->\nsha: abc1234567890\ntime: 1760000000\nbranch: main\n";
-        let (log, sha, time, branch) = parse_release_body(body).unwrap();
-        assert_eq!(log, "Fix the thing\n\nLonger explanation.");
-        assert_eq!(sha, "abc1234567890");
-        assert_eq!(time, 1760000000);
-        assert_eq!(branch, "main");
-    }
-
-    #[test]
-    fn footer_rejects_garbage() {
-        assert!(parse_release_body("no footer here").is_none());
-        assert!(parse_release_body("x\n<!-- screen-ai-build -->\nsha: \ntime: 0\n").is_none());
-        assert!(parse_release_body("x\n<!-- screen-ai-build -->\nsha: abc\ntime: soon\n").is_none());
-    }
-
-    #[test]
-    fn offer_ordering() {
-        assert!(is_newer_offer(200, 100));
-        assert!(!is_newer_offer(100, 100));
-        assert!(!is_newer_offer(50, 100));
-    }
-
-    #[test]
-    fn beta_selection() {
-        assert!(beta_worth_showing(300, 100, Some(200)));
-        assert!(!beta_worth_showing(150, 100, Some(200)));
-        assert!(beta_worth_showing(150, 100, None));
-        assert!(!beta_worth_showing(100, 100, None));
-        assert!(!beta_worth_showing(50, 100, None));
-    }
 }

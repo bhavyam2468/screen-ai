@@ -4,17 +4,16 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        serif: ["Libron", "Newsreader", "Charter", "Georgia", "serif"],
-        sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
-        mono: ["JetBrainsMono Nerd Font", "JetBrains Mono", "ui-monospace", "SFMono-Regular", "monospace"],
+        sans: ["Geist Variable", "Geist", "system-ui", "-apple-system", "sans-serif"],
+        mono: ["Geist Mono Variable", "Geist Mono", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       colors: {
-        void: "#08080d",
-        panel: "rgba(255,255,255,0.06)",
+        void: "#111925",
+        panel: "rgba(25,38,54,0.72)",
       },
       boxShadow: {
-        glow: "0 8px 60px -8px rgba(139,92,246,0.45), 0 2px 24px rgba(0,0,0,0.6)",
-        card: "0 20px 80px -12px rgba(0,0,0,0.75)",
+        glow: "0 8px 48px -16px rgba(72,126,214,0.32), 0 2px 20px rgba(6,12,22,0.46)",
+        card: "0 22px 70px -20px rgba(6,12,22,0.72)",
       },
     },
   },
