@@ -166,7 +166,7 @@ export default function ChatPanel({ messages, streaming, error, model, onClose, 
       <div className="flex items-center gap-2 px-3.5 pt-2.5 pb-2 shrink-0">
         <span className="relative flex w-1.5 h-1.5">
           {streaming && (
-            <span className="absolute inline-flex w-full h-full rounded-full bg-blue-300/35" />
+            <span className="absolute inline-flex w-full h-full rounded-full accent-pulse" />
           )}
           <span
             className={`relative inline-flex w-1.5 h-1.5 rounded-full transition-colors duration-300 ${

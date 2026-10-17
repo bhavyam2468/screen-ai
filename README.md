@@ -61,13 +61,15 @@ screen-ai --toggle
 - Open settings with the gear button or `screen-ai --settings`.
 - Dismiss the overlay with **Esc**.
 
+Settings can follow the desktop theme or use a detected **Qt / Matugen** palette. Screen AI reads KDE colors from `~/.config/kdeglobals` and active `qt5ct` / `qt6ct` color-scheme files, then maps window, surface, text, button, selection/accent, and link colors into the overlay. If Matugen writes to one of those active Qt/KDE theme files, its colors are picked up at launch or the next time the overlay is summoned. Matugen templates can write anywhere, so other custom output paths are not guessed. Screen AI is a Tauri WebView rather than a Qt widget app: Qt widget styles, control geometry, and Qt fonts cannot be imported directly; its layout, motion, and Geist typography stay Screen AI's own.
+
 Providers include Gemini, OpenAI, Anthropic, OpenRouter, Groq, Ollama, and custom OpenAI-compatible endpoints. Add your own provider key; no hosted Screen AI key is required. The interface uses self-hosted Geist and Geist Mono variable fonts (Fontsource), so it does not fetch typography from a third-party CDN; see [`licenses/GEIST-OFL-1.1.txt`](licenses/GEIST-OFL-1.1.txt).
 
 ---
 
 ## Updating
 
-The app checks the source revision on GitHub. From Settings, choose **Build & install update** to fetch the latest `main` source and compile it locally. No prebuilt executable is downloaded. The command-line equivalent is:
+The app checks the source revision on GitHub. From Settings, choose **Pull & build update** to fetch the latest `main` source and compile it locally. To try a review before it merges, enter its pull request number under **Build a pull request**; Screen AI fetches that PR commit and compiles it on your computer. Only build PRs you trust. No prebuilt executable is downloaded. The command-line equivalent is:
 
 ```bash
 screen-ai-update

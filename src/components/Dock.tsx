@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ArrowUp, Settings2, Loader2 } from "lucide-react";
 import ChatPanel, { Msg } from "./ChatPanel";
 import SettingsPanel from "./SettingsPanel";
-import { Settings, setInteractiveRegions } from "../lib/store";
+import { Settings, SystemTheme, setInteractiveRegions } from "../lib/store";
 
 export type Panel = "none" | "chat" | "settings";
 
@@ -15,8 +15,8 @@ interface Props {
   streaming: boolean;
   error: string | null;
   thumb: string | null;
-  dark: boolean;
   settings: Settings;
+  systemTheme: SystemTheme;
   hasUpdate?: boolean;
   onSubmit: (prompt: string) => void;
   onToggleSettings: () => void;
@@ -130,7 +130,7 @@ export default function Dock(p: Props) {
       }}
       transition={reduced ? { duration: 0 } : { duration: 0.22, ease: EASE }}
       onAnimationComplete={() => pushRegion.current()}
-      style={{ backgroundColor: `rgba(${p.dark ? "21,31,45" : "250,252,255"},${opacity})` }}
+      style={{ backgroundColor: `rgba(var(--window-rgb),${opacity})` }}
       className="dock-card pointer-events-auto w-[540px] max-w-[calc(100vw-24px)] rounded-2xl border border-white/15 shadow-[0_24px_80px_-28px_rgba(4,10,20,0.76)] overflow-hidden"
     >
       <AnimatePresence initial={false}>
@@ -145,7 +145,12 @@ export default function Dock(p: Props) {
             transition={{ duration: reduced ? 0 : 0.16, ease: EASE }}
           >
             {p.panel === "settings" ? (
-              <SettingsPanel settings={p.settings} onSave={p.onSaveSettings} onClose={p.onCloseSettings} />
+              <SettingsPanel
+                settings={p.settings}
+                systemTheme={p.systemTheme}
+                onSave={p.onSaveSettings}
+                onClose={p.onCloseSettings}
+              />
             ) : (
               <ChatPanel
                 messages={p.messages}
@@ -216,7 +221,7 @@ export default function Dock(p: Props) {
           whileTap={reduced ? undefined : { scale: 0.96 }}
           aria-label="Send prompt"
           className={`p-1.5 rounded-lg flex items-center justify-center transition-colors duration-150 disabled:opacity-35 ${
-            canSend ? "bg-blue-400 text-slate-950 hover:bg-blue-300" : "text-white/40"
+            canSend ? "accent-action" : "text-white/40"
           }`}
         >
           <ArrowUp size={16} strokeWidth={2.4} />

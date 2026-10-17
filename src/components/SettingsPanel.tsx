@@ -11,25 +11,30 @@ import {
   RefreshCw,
   Search,
   Download,
+  GitPullRequest,
   Moon,
   Sun,
   SunMoon,
+  Palette,
 } from "lucide-react";
 import {
   Settings,
   PROVIDERS,
   ReplyPosition,
   ThemeMode,
+  SystemTheme,
   quitApp,
   fetchModels,
   checkForUpdates,
   updateFromSource,
+  updateFromPr,
   restartApp,
   UpdateStatus,
 } from "../lib/store";
 
 interface Props {
   settings: Settings;
+  systemTheme: SystemTheme;
   onSave: (s: Settings) => void;
   onClose: () => void;
 }
@@ -44,6 +49,7 @@ const THEMES: { id: ThemeMode; icon: typeof Moon; label: string }[] = [
   { id: "auto", icon: SunMoon, label: "Auto" },
   { id: "dark", icon: Moon, label: "Dark" },
   { id: "light", icon: Sun, label: "Light" },
+  { id: "qt", icon: Palette, label: "Qt / Matugen" },
 ];
 
 // Safety classifiers (Llama Guard & co) answer "safe"/"unsafe" instead of chatting.
@@ -53,7 +59,7 @@ const LABEL = "text-[10.5px] uppercase tracking-[0.14em] text-white/45 mb-1.5 fo
 const FIELD =
   "w-full rounded-lg bg-neutral-800 border border-white/10 px-3 py-2 text-[13px] placeholder:text-white/25 text-white focus:border-white/30 transition-colors";
 
-export default function SettingsPanel({ settings, onSave, onClose }: Props) {
+export default function SettingsPanel({ settings, systemTheme, onSave, onClose }: Props) {
   const [draft, setDraft] = useState<Settings>({ ...settings });
   const [showKey, setShowKey] = useState(false);
   const [fetching, setFetching] = useState(false);
@@ -67,6 +73,8 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [updateSuccess, setUpdateSuccess] = useState(false);
   const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [prNumber, setPrNumber] = useState("");
+  const [buildingPr, setBuildingPr] = useState(false);
 
   useEffect(() => {
     checkUpdates();
@@ -97,6 +105,27 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
       setUpdateError(String(err));
     } finally {
       setUpdatingSource(false);
+    }
+  };
+
+  const buildPullRequest = async () => {
+    const number = Number(prNumber.trim());
+    if (!Number.isSafeInteger(number) || number < 1) {
+      setUpdateError("Enter a valid Screen AI pull request number.");
+      return;
+    }
+
+    setBuildingPr(true);
+    setUpdateError(null);
+    setUpdateMessage(null);
+    try {
+      const message = await updateFromPr(number);
+      setUpdateMessage(message);
+      setUpdateSuccess(true);
+    } catch (err) {
+      setUpdateError(String(err));
+    } finally {
+      setBuildingPr(false);
     }
   };
 
@@ -306,11 +335,12 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
 
         <div>
           <p className={LABEL}>Theme</p>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-4 gap-2">
             {THEMES.map(({ id, icon: Icon, label }) => (
               <button
                 key={id}
                 onClick={() => setDraft({ ...draft, theme: id })}
+                title={id === "qt" ? "Use the detected KDE, qt5ct, or qt6ct color palette" : label}
                 className={`py-2 rounded-lg border flex flex-col items-center justify-center gap-1 transition-colors ${
                   (draft.theme ?? "auto") === id
                     ? "bg-white text-black font-semibold border-white"
@@ -322,6 +352,19 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
               </button>
             ))}
           </div>
+          {draft.theme === "qt" ? (
+            <p className="mt-2 text-[10.5px] leading-relaxed text-white/40">
+              {systemTheme.palette?.name
+                ? `Using the detected “${systemTheme.palette.name}” palette. Colors refresh when the overlay is summoned.`
+                : systemTheme.palette
+                ? "A Qt color palette was detected and refreshes when the overlay is summoned."
+                : "No KDE or qt5ct/qt6ct palette was detected. Qt mode will fall back to your desktop's light/dark and accent colors."}
+            </p>
+          ) : (
+            <p className="mt-2 text-[10.5px] leading-relaxed text-white/40">
+              Auto follows the desktop mode and accent. Qt / Matugen maps detected system palette colors into the overlay.
+            </p>
+          )}
         </div>
 
         <div className="pt-3 border-t border-white/10">
@@ -352,7 +395,7 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
             <button
               type="button"
               onClick={checkUpdates}
-              disabled={checkingUpdate || updatingSource}
+              disabled={checkingUpdate || updatingSource || buildingPr}
               aria-label="Check for source updates"
               className="shrink-0 px-2.5 py-1.5 rounded-lg bg-neutral-800 border border-white/10 hover:border-white/25 text-[11px] text-white/70 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50"
             >
@@ -386,22 +429,56 @@ export default function SettingsPanel({ settings, onSave, onClose }: Props) {
             <button
               type="button"
               onClick={triggerUpdate}
-              disabled={checkingUpdate || updatingSource}
+              disabled={checkingUpdate || updatingSource || buildingPr}
               aria-live="polite"
               className="w-full mt-2.5 py-2 rounded-lg bg-white hover:bg-neutral-200 text-black font-semibold text-[12px] flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
             >
               {updatingSource ? (
                 <>
                   <RefreshCw size={12} className="animate-spin" />
-                  <span>Building from source on this device…</span>
+                  <span>Pulling and building on this device…</span>
                 </>
               ) : (
                 <>
                   <Download size={12} />
-                  <span>{updateStatus?.update_available ? "Build & install update" : "Rebuild latest source"}</span>
+                  <span>{updateStatus?.update_available ? "Pull & build update" : "Pull & rebuild latest"}</span>
                 </>
               )}
             </button>
+          )}
+          {!updateSuccess && (
+            <div className="mt-3 p-2.5 rounded-lg bg-neutral-900 border border-white/10 space-y-2">
+              <p className={LABEL}>Build a pull request</p>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={prNumber}
+                  onChange={(e) => setPrNumber(e.target.value)}
+                  placeholder="PR number"
+                  aria-label="Screen AI pull request number"
+                  className={`${FIELD} min-w-0 flex-1`}
+                  disabled={buildingPr || updatingSource || checkingUpdate}
+                />
+                <button
+                  type="button"
+                  onClick={buildPullRequest}
+                  disabled={!prNumber.trim() || buildingPr || updatingSource || checkingUpdate}
+                  className="shrink-0 px-3 py-2 rounded-lg bg-neutral-800 border border-white/10 hover:border-white/25 text-[12px] text-white/80 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                >
+                  {buildingPr ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : (
+                    <GitPullRequest size={13} />
+                  )}
+                  {buildingPr ? "Building…" : "Build PR"}
+                </button>
+              </div>
+              <p className="text-[10px] leading-relaxed text-white/35">
+                Pulls this repository’s PR and builds it locally, replacing the installed app. Only build PRs you trust.
+              </p>
+            </div>
           )}
           <p className="mt-1.5 text-[10px] leading-relaxed text-white/35">
             GitHub source is compiled locally. No prebuilt app binary is downloaded.

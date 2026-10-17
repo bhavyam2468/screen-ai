@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type ReplyPosition = "bottom-right" | "bottom-left" | "bottom-center";
-export type ThemeMode = "auto" | "dark" | "light";
+export type ThemeMode = "auto" | "dark" | "light" | "qt";
 
 export interface Settings {
   provider: string;
@@ -190,21 +190,44 @@ export async function updateFromSource(): Promise<string> {
   return await invoke<string>("update_from_source");
 }
 
+export async function updateFromPr(prNumber: number): Promise<string> {
+  if (!inTauri) throw new Error("Pull request builds are available in the installed Linux app.");
+  return await invoke<string>("update_from_pr", { prNumber });
+}
+
 export async function restartApp(): Promise<void> {
   if (!inTauri) return;
   await invoke("restart_app");
 }
 
+export interface QtPalette {
+  name: string | null;
+  dark: boolean | null;
+  window: string | null;
+  window_text: string | null;
+  base: string | null;
+  text: string | null;
+  alternate_base: string | null;
+  button: string | null;
+  button_text: string | null;
+  highlight: string | null;
+  highlighted_text: string | null;
+  link: string | null;
+  tooltip_base: string | null;
+  tooltip_text: string | null;
+}
+
 export interface SystemTheme {
   dark: boolean;
   accent: string | null;
+  palette: QtPalette | null;
 }
 
 export async function getSystemTheme(): Promise<SystemTheme> {
-  if (!inTauri) return { dark: true, accent: null };
+  if (!inTauri) return { dark: true, accent: null, palette: null };
   try {
     return await invoke<SystemTheme>("get_system_theme");
   } catch {
-    return { dark: true, accent: null };
+    return { dark: true, accent: null, palette: null };
   }
 }
