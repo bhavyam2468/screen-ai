@@ -12,7 +12,7 @@ body,
 }
 
 body {
-  font-family: "Geist Variable", Geist, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: var(--ui-font, "Geist Variable", Geist, system-ui, -apple-system, "Segoe UI", sans-serif);
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -75,7 +75,7 @@ body {
 }
 
 .md-body p {
-  margin: 0 0 10px;
+  margin: 0 0 8px;
 }
 
 .md-body p:last-child {
@@ -162,7 +162,7 @@ body {
 }
 
 .md-body code {
-  font-family: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--ui-mono, "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, monospace);
   font-size: 12px;
   background: var(--code-bg);
   border: 1px solid var(--border-soft);
@@ -178,7 +178,7 @@ body {
   padding: 10px 14px;
   overflow-x: auto;
   margin: 10px 0;
-  font-family: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, monospace;
+  font-family: var(--ui-mono, "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, monospace);
 }
 
 .md-body pre code {
@@ -541,7 +541,7 @@ body {
   max-height: min(220px, 32vh);
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 3px 5px 5px;
+  padding: 6px;
 }
 .omnibox-row {
   position: relative;
@@ -550,9 +550,9 @@ body {
   min-width: 0;
   align-items: center;
   gap: 8px;
-  min-height: 31px;
-  padding: 4px 7px;
-  border-radius: 9px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: var(--radius-inner);
   color: var(--fg-dim);
   text-align: left;
   transition: background-color 0.13s ease, color 0.13s ease;
@@ -708,4 +708,61 @@ body {
   .omnibox-row {
     animation: none;
   }
+}
+
+/* ══════════════ theme.conf tokens, palette rows, shot preview ══════════════ */
+:root {
+  --radius-card: 18px;
+  --radius-inner: 10px;
+  --radius-control: 6px;
+  --motion-scale: 1;
+}
+
+.omnibox-row .omnibox-label {
+  flex: 0 0 auto;
+  font-family: var(--ui-mono, inherit);
+  font-size: 12.5px;
+  color: var(--fg-strong, var(--fg));
+}
+.omnibox-desc {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  opacity: 0.72;
+}
+.omnibox-row.is-active .omnibox-desc {
+  opacity: 0.95;
+}
+
+.shot-preview {
+  position: fixed;
+  z-index: 40;
+  pointer-events: none;
+  width: min(640px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  padding: 6px;
+  border-radius: var(--radius-card);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(var(--window-rgb), 0.97);
+  box-shadow: 0 24px 80px -28px rgba(4, 10, 20, 0.72);
+  overflow: hidden;
+}
+.shot-preview img {
+  display: block;
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  border-radius: var(--radius-inner);
+}
+
+/* theme.conf: [motion] mode = reduced */
+[data-motion="reduced"] *,
+[data-motion="reduced"] *::before,
+[data-motion="reduced"] *::after {
+  transition-duration: 0.01ms !important;
+  animation-duration: 0.01ms !important;
 }

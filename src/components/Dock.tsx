@@ -4,25 +4,17 @@ import {
   ArrowUp,
   Check,
   ChevronRight,
-  Command,
   Crosshair,
   FileText,
   FolderOpen,
-  KeyRound,
   Loader2,
-  Moon,
-  Palette,
-  RefreshCw,
   Settings2,
-  Sun,
-  SunMoon,
   X,
 } from "lucide-react";
 import ChatPanel, { Msg } from "./ChatPanel";
 import SettingsPanel from "./SettingsPanel";
 import {
   FileSuggestion,
-  PROVIDERS,
   ScreenRect,
   Settings,
   SettingsSection,
@@ -35,32 +27,26 @@ export type Panel = "none" | "chat" | "settings";
 const EASE = [0.22, 1, 0.36, 1] as const;
 const LAYOUT_SPRING = { type: "spring", stiffness: 360, damping: 35, mass: 0.88 } as const;
 
-type PaletteItem = { id: string; label: string; value: string; icon: typeof Command };
-type SlashDefinition = { name: string; icon: typeof Command };
+/** One row in the slash palette. Commands are flat and each has a short description. */
+type PaletteItem = { id: string; label: string; hint?: string; value: string };
+type SlashCommand = { name: string; hint: string };
 
-const SLASH_COMMANDS: SlashDefinition[] = [
-  { name: "model", icon: KeyRound },
-  { name: "provider", icon: Settings2 },
-  { name: "key", icon: KeyRound },
-  { name: "theme", icon: Palette },
-  { name: "settings", icon: Settings2 },
-  { name: "update", icon: RefreshCw },
-  { name: "capture", icon: Crosshair },
-  { name: "hide", icon: X },
-  { name: "exit", icon: X },
-];
-
-const THEME_OPTIONS: { value: string; label: string; icon: typeof Sun }[] = [
-  { value: "auto", label: "Auto", icon: SunMoon },
-  { value: "dark", label: "Dark", icon: Moon },
-  { value: "light", label: "Light", icon: Sun },
-  { value: "qt", label: "Qt / Matugen", icon: Palette },
-];
-
-const SETTINGS_OPTIONS = [
-  { value: "model", label: "Model", icon: KeyRound },
-  { value: "appearance", label: "Appearance", icon: Palette },
-  { value: "updates", label: "Updates", icon: RefreshCw },
+/**
+ * Top-level commands. Add new ones here and handle them in App.runSlashCommand.
+ * Keep hints short: they are shown only when they help.
+ */
+const SLASH_COMMANDS: SlashCommand[] = [
+  { name: "model", hint: "Search and pick a model" },
+  { name: "provider", hint: "Switch AI provider" },
+  { name: "key", hint: "Set the API key" },
+  { name: "theme", hint: "auto, dark, light, or qt" },
+  { name: "settings", hint: "Open settings" },
+  { name: "config", hint: "Edit theme.conf" },
+  { name: "update", hint: "Update from GitHub" },
+  { name: "capture", hint: "Select a screen region" },
+  { name: "new", hint: "Start a new chat" },
+  { name: "hide", hint: "Dismiss the overlay" },
+  { name: "exit", hint: "Quit Screen AI" },
 ];
 
 interface Props {
@@ -82,6 +68,8 @@ interface Props {
   onStartSnip: () => void;
   onCancelSnip: () => void;
   onSelectSnip: (rect: ScreenRect) => void;
+  preview: string | null;
+  modelQuery: string;
   onRetry: () => void;
   onDismiss: () => void;
 }
@@ -192,6 +180,9 @@ export default function Dock(p: Props) {
   const selectionAnchor = useRef<{ x: number; y: number } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  const previewTimer = useRef<number>(0);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewPos, setPreviewPos] = useState<{ left: number; top?: number; bottom?: number }>({ left: 12, top: 12 });
   const opacity = (p.settings.bg_opacity ?? 100) / 100;
   const reduced = useReducedMotion() ?? false;
 
@@ -199,61 +190,35 @@ export default function Dock(p: Props) {
   const fileQuery = fileTrigger?.query ?? null;
   const commandText = value.trimStart();
   const commandMatch = commandText.match(/^\/([a-z-]*)$/i);
-  const argumentMatch = commandText.match(/^\/(theme|provider|model|key|api-key|settings|preferences)\s+([^\n]*)$/i);
+  const argumentMatch = commandText.match(/^\/([a-z-]+)\s+([^\n]*)$/i);
 
   const paletteItems = useMemo<PaletteItem[]>(() => {
+    const toItem = (command: SlashCommand): PaletteItem => ({
+      id: command.name,
+      label: `/${command.name}`,
+      hint: command.hint,
+      value: `/${command.name}`,
+    });
     if (commandMatch) {
       const query = commandMatch[1].toLowerCase();
-      return SLASH_COMMANDS
-        .filter((item) => item.name.startsWith(query))
-        .map((item) => ({
-          id: item.name,
-          label: `/${item.name}`,
-          value: `/${item.name}`,
-          icon: item.icon,
-        }));
+      return SLASH_COMMANDS.filter((item) => item.name.startsWith(query)).map(toItem);
     }
     if (!argumentMatch) {
       if (!forcedCommands) return [];
-      return SLASH_COMMANDS
-        .filter((item) => item.name.includes(forcedQuery.trim().toLowerCase()))
-        .map((item) => ({
-          id: item.name,
-          label: `/${item.name}`,
-          value: `/${item.name}`,
-          icon: item.icon,
-        }));
+      const query = forcedQuery.trim().toLowerCase();
+      return SLASH_COMMANDS.filter((item) => item.name.includes(query)).map(toItem);
     }
     const command = argumentMatch[1].toLowerCase();
-    const raw = argumentMatch[2];
-    const query = raw.trim().toLowerCase();
-    if (command === "theme" && !raw.includes(" ")) {
-      return THEME_OPTIONS
-        .filter((item) => item.value.startsWith(query) || item.label.toLowerCase().includes(query))
-        .map((item) => ({ id: item.value, label: item.label, value: `/theme ${item.value}`, icon: item.icon }));
+    const raw = argumentMatch[2].trim();
+    const definition = SLASH_COMMANDS.find((item) => item.name === (command === "api-key" ? "key" : command));
+    if (!definition) return [];
+    if (!raw) return [toItem(definition)];
+    if (command === "model") {
+      // A model search opens Settings → Model with the search filled in.
+      return [{ id: "model-search", label: `Search models for “${raw}”`, hint: "Open Model settings", value: `/model ${raw}` }];
     }
-    if ((command === "provider" || command === "key" || command === "api-key") && !raw.includes(" ")) {
-      return PROVIDERS
-        .filter((item) => item.id.startsWith(query) || item.label.toLowerCase().includes(query))
-        .map((item) => ({
-          id: item.id,
-          label: item.label,
-          value: command === "provider" ? `/provider ${item.id}` : `/key ${item.id}`,
-          icon: KeyRound,
-        }));
-    }
-    if (command === "model" && !raw.includes(" ")) {
-      return PROVIDERS
-        .filter((item) => item.id.startsWith(query) || item.label.toLowerCase().includes(query))
-        .map((item) => ({ id: item.id, label: item.label, value: `/model ${item.id}`, icon: KeyRound }));
-    }
-    if ((command === "settings" || command === "preferences") && !raw.includes(" ")) {
-      return SETTINGS_OPTIONS
-        .filter((item) => item.value.startsWith(query) || item.label.toLowerCase().includes(query))
-        .map((item) => ({ id: item.value, label: item.label, value: `/settings ${item.value}`, icon: item.icon }));
-    }
-    return [];
-  }, [argumentMatch, commandMatch, forcedCommands, forcedQuery, p.settings.provider, p.settings.provider_profiles]);
+    return [{ id: `${definition.name}-run`, label: `/${command} ${raw}`, hint: definition.hint, value: `/${command} ${raw}` }];
+  }, [argumentMatch, commandMatch, forcedCommands, forcedQuery]);
 
   const forcedQueryMode = forcedCommands && !commandMatch && !argumentMatch;
   const showCommandPalette = (forcedCommands || paletteItems.length > 0) && !dismissed;
@@ -343,6 +308,10 @@ export default function Dock(p: Props) {
   }, [p.panel, p.snipping]);
 
   useEffect(() => {
+    if (!p.preview || p.snipping) setPreviewOpen(false);
+  }, [p.preview, p.snipping]);
+
+  useEffect(() => {
     if (p.snipping || p.panel === "settings") {
       setForcedCommands(false);
       setForcedQuery("");
@@ -413,6 +382,26 @@ export default function Dock(p: Props) {
       inputRef.current?.focus();
       inputRef.current?.setSelectionRange(nextCaret, nextCaret);
     });
+  };
+
+  // Hovering the thumbnail for a moment shows the full capture above (or below) the card.
+  const openPreviewSoon = () => {
+    if (!p.preview || p.snipping) return;
+    window.clearTimeout(previewTimer.current);
+    previewTimer.current = window.setTimeout(() => {
+      const rect = cardRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const above = rect.top > window.innerHeight * 0.45;
+      setPreviewPos({
+        left: Math.max(12, Math.min(rect.left, window.innerWidth - 12 - Math.min(640, window.innerWidth - 24))),
+        ...(above ? { bottom: window.innerHeight - rect.top + 12 } : { top: rect.bottom + 12 }),
+      });
+      setPreviewOpen(true);
+    }, 350);
+  };
+  const closePreview = () => {
+    window.clearTimeout(previewTimer.current);
+    setPreviewOpen(false);
   };
 
   const onInputKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -494,7 +483,7 @@ export default function Dock(p: Props) {
           width: showCommandPalette ? "min(760px, calc(100vw - 24px))" : "min(540px, calc(100vw - 24px))",
           visibility: p.snipping ? "hidden" : "visible",
         }}
-        className="dock-card pointer-events-auto relative z-10 max-w-[calc(100vw-24px)] overflow-hidden rounded-[18px] border border-white/15 shadow-[0_24px_80px_-28px_rgba(4,10,20,0.72)]"
+        className="dock-card pointer-events-auto relative z-10 max-w-[calc(100vw-24px)] overflow-hidden rounded-[var(--radius-card)] border border-white/15 shadow-[0_24px_80px_-28px_rgba(4,10,20,0.72)]"
       >
         <AnimatePresence initial={false}>
           {open && (
@@ -513,6 +502,7 @@ export default function Dock(p: Props) {
                       section={p.settingsSection}
                       onSectionChange={p.onSettingsSectionChange}
                       onSave={p.onSaveSettings}
+                      modelQuery={p.modelQuery}
                     />
                   ) : (
                     <ChatPanel
@@ -551,24 +541,21 @@ export default function Dock(p: Props) {
                 <div className="omnibox-panel">
                   {forcedQueryMode && forcedQuery && <div className="omnibox-query">{forcedQuery}</div>}
                   <div className="omnibox-list" role="listbox" aria-label="Commands">
-                    {paletteItems.map((item, index) => {
-                      const Icon = item.icon;
-                      return (
-                        <button
-                          key={item.id}
-                          type="button"
-                          role="option"
-                          aria-selected={activeIndex === index}
-                          className={`omnibox-row ${activeIndex === index ? "is-active" : ""}`}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onMouseEnter={() => setHighlighted(index)}
-                          onClick={() => choosePaletteItem(item)}
-                        >
-                          <span className="omnibox-icon"><Icon size={14} /></span>
-                          <span className="omnibox-label">{item.label}</span>
-                        </button>
-                      );
-                    })}
+                    {paletteItems.map((item, index) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        role="option"
+                        aria-selected={activeIndex === index}
+                        className={`omnibox-row ${activeIndex === index ? "is-active" : ""}`}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onMouseEnter={() => setHighlighted(index)}
+                        onClick={() => choosePaletteItem(item)}
+                      >
+                        <span className="omnibox-label">{item.label}</span>
+                        {item.hint && <span className="omnibox-desc">{item.hint}</span>}
+                      </button>
+                    ))}
                   </div>
                 </div>
               )}
@@ -591,12 +578,16 @@ export default function Dock(p: Props) {
           )}
         </AnimatePresence>
 
-        <div className={`dock-inputbar flex items-end gap-2 px-3 py-2.5 transition-colors ${open ? "border-t border-white/10" : "border-t border-transparent"}`}>
+        <div className={`dock-inputbar flex items-end gap-2.5 px-3.5 py-3 transition-colors ${open ? "border-t border-white/10" : "border-t border-transparent"}`}>
           <button
             type="button"
             onClick={p.onStartSnip}
+            onMouseEnter={openPreviewSoon}
+            onMouseLeave={closePreview}
+            onFocus={openPreviewSoon}
+            onBlur={closePreview}
             aria-label="Select a region from this screenshot"
-            className="shot-button group relative mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-white/15 bg-neutral-800 transition-[border-color,transform] duration-200 hover:-translate-y-px hover:border-white/30"
+            className="shot-button group relative mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-[var(--radius-inner)] border border-white/15 bg-neutral-800 transition-[border-color,transform] duration-200 hover:-translate-y-px hover:border-white/30"
           >
             {p.thumb ? (
               <>
@@ -623,14 +614,14 @@ export default function Dock(p: Props) {
             aria-label="Ask about your screen"
             aria-expanded={showCommandPalette || showFilePicker}
             spellCheck={false}
-            className="dock-textarea min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-[13px] leading-[1.45] text-white placeholder:text-white/30"
+            className="dock-textarea min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-[length:var(--ui-size,13px)] leading-[1.45] text-white placeholder:text-white/30"
           />
 
           <button
             type="button"
             onClick={p.onToggleSettings}
             aria-label={p.panel === "settings" ? "Close settings" : "Open settings"}
-            className={`mb-0.5 relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ${
+            className={`mb-0.5 relative flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-inner)] transition-colors duration-150 ${
               p.panel === "settings" ? "text-white" : "text-white/40 hover:bg-white/5 hover:text-white"
             }`}
           >
@@ -644,7 +635,7 @@ export default function Dock(p: Props) {
             disabled={!value.trim() || p.streaming}
             whileTap={reduced ? undefined : { scale: 0.94 }}
             aria-label="Send prompt"
-            className={`mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-35 ${
+            className={`mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--radius-inner)] transition-colors duration-150 disabled:opacity-35 ${
               value.trim() && !p.streaming ? "accent-action" : "text-white/40"
             }`}
           >
@@ -652,6 +643,22 @@ export default function Dock(p: Props) {
           </motion.button>
         </div>
       </motion.div>
+
+      <AnimatePresence>
+        {previewOpen && p.preview && !p.snipping && (
+          <motion.div
+            key="shot-preview"
+            className="shot-preview"
+            style={previewPos}
+            initial={reduced ? false : { opacity: 0, scale: 0.97, y: 4 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, transition: { duration: 0.1 } }}
+            transition={reduced ? { duration: 0 } : { duration: 0.16, ease: EASE }}
+          >
+            <img src={p.preview} alt="Full screenshot preview" draggable={false} />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {p.snipping && (

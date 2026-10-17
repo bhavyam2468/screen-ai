@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   AlignCenterVertical,
   AlignEndVertical,
@@ -25,6 +26,8 @@ import {
   settingsForSave,
   updateFromPr,
   updateFromSource,
+  inTauri,
+  UpdateEvent,
 } from "../lib/store";
 
 interface Props {
@@ -32,6 +35,8 @@ interface Props {
   section: SettingsSection;
   onSectionChange: (section: SettingsSection) => void;
   onSave: (settings: Settings) => void;
+  /** Pre-fills the model search, e.g. from `/model claude`. */
+  modelQuery?: string;
 }
 
 const SECTIONS: { id: SettingsSection; label: string }[] = [
@@ -56,7 +61,7 @@ const THEMES: { id: ThemeMode; label: string }[] = [
 const NOT_CHAT = /guard|moderat|safety|shield|classif/i;
 const LABEL = "mb-1 block text-[10px] uppercase tracking-wide text-white/45";
 const FIELD =
-  "w-full rounded-lg border border-white/10 bg-neutral-800 px-2.5 py-1.5 text-[12px] text-white focus:border-white/30 transition-colors";
+  "w-full rounded-[var(--radius-inner)] border border-white/10 bg-neutral-800 px-2.5 py-1.5 text-[12px] text-white focus:border-white/30 transition-colors";
 const IDLE_BUTTON = "border-white/10 bg-neutral-800 text-white/60 hover:bg-neutral-700 hover:text-white";
 const ACTIVE_BUTTON = "border-white bg-white font-medium text-black";
 
@@ -68,14 +73,15 @@ function profileFrom(settings: Settings): ProviderProfile {
   };
 }
 
-export default function SettingsPanel({ settings, section, onSectionChange, onSave }: Props) {
+export default function SettingsPanel({ settings, section, onSectionChange, onSave, modelQuery = "" }: Props) {
   const normalizedSettings = normalizeSettings(settings);
   const [draft, setDraft] = useState<Settings>(normalizedSettings);
   const [showKey, setShowKey] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [fetched, setFetched] = useState<string[]>([]);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [filter, setFilter] = useState("");
+  const [filter, setFilter] = useState(modelQuery);
+  const [updateLine, setUpdateLine] = useState("");
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [updatingSource, setUpdatingSource] = useState(false);
@@ -106,15 +112,33 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
     }
   };
 
+  // Updates run in the background. The Rust side streams lines and reports the result once.
+  useEffect(() => {
+    if (!inTauri) return;
+    const unsubs: (() => void)[] = [];
+    (async () => {
+      unsubs.push(await listen<string>("update-progress", (event) => setUpdateLine(event.payload)));
+      unsubs.push(
+        await listen<UpdateEvent>("update-done", (event) => {
+          setUpdatingSource(false);
+          setBuildingPr(false);
+          setUpdateLine("");
+          if (event.payload.ok) setUpdateSuccess(true);
+          else setUpdateError(event.payload.message);
+        })
+      );
+    })();
+    return () => unsubs.forEach((unsub) => unsub());
+  }, []);
+
   const triggerUpdate = async () => {
     setUpdatingSource(true);
     setUpdateError(null);
+    setUpdateSuccess(false);
     try {
       await updateFromSource();
-      setUpdateSuccess(true);
     } catch (err) {
       setUpdateError(String(err));
-    } finally {
       setUpdatingSource(false);
     }
   };
@@ -127,12 +151,11 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
     }
     setBuildingPr(true);
     setUpdateError(null);
+    setUpdateSuccess(false);
     try {
       await updateFromPr(number);
-      setUpdateSuccess(true);
     } catch (err) {
       setUpdateError(String(err));
-    } finally {
       setBuildingPr(false);
     }
   };
@@ -197,7 +220,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
         ref={tabsRef}
         role="tablist"
         aria-label="Sections"
-        className="grid shrink-0 grid-cols-3 gap-1 border-b border-white/10 p-2"
+        className="grid shrink-0 grid-cols-3 gap-1.5 border-b border-white/10 p-2.5"
         onKeyDown={(event) => {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
           event.preventDefault();
@@ -214,7 +237,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
             role="tab"
             aria-selected={section === id}
             onClick={() => onSectionChange(id)}
-            className={`rounded-lg border px-2 py-1.5 text-[11px] transition-colors ${
+            className={`rounded-[var(--radius-inner)] border px-2 py-1.5 text-[11px] transition-colors ${
               section === id ? ACTIVE_BUTTON : IDLE_BUTTON
             }`}
           >
@@ -223,7 +246,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
         ))}
       </div>
 
-      <div className="settings-body min-h-0 flex-1 overflow-y-auto px-3 py-2.5">
+      <div className="settings-body min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
         {section === "model" && (
           <div className="space-y-3">
             <div className="grid grid-cols-4 gap-1">
@@ -233,7 +256,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                   type="button"
                   onClick={() => pickProvider(provider.id)}
                   aria-pressed={draft.provider === provider.id}
-                  className={`min-w-0 truncate rounded-lg border px-1.5 py-1.5 text-[10.5px] transition-colors ${
+                  className={`min-w-0 truncate rounded-[var(--radius-inner)] border px-1.5 py-1.5 text-[10.5px] transition-colors ${
                     draft.provider === provider.id ? ACTIVE_BUTTON : IDLE_BUTTON
                   }`}
                 >
@@ -245,7 +268,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
             {preset.needsKey && (
               <div>
                 <label className={LABEL} htmlFor="provider-api-key">{preset.label} key</label>
-                <div className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-neutral-800 px-2.5 py-1.5 focus-within:border-white/25">
+                <div className="flex items-center gap-1.5 rounded-[var(--radius-inner)] border border-white/10 bg-neutral-800 px-2.5 py-1.5 focus-within:border-white/25">
                   <input
                     id="provider-api-key"
                     type={showKey ? "text" : "password"}
@@ -288,7 +311,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                   onClick={() => void doFetch()}
                   disabled={fetching}
                   aria-label="Fetch models"
-                  className="mb-1 grid h-6 w-6 place-items-center rounded-md text-white/50 hover:bg-white/5 hover:text-white disabled:opacity-50"
+                  className="mb-1 grid h-6 w-6 place-items-center rounded-[var(--radius-control)] text-white/50 hover:bg-white/5 hover:text-white disabled:opacity-50"
                 >
                   <RefreshCw size={12} className={fetching ? "animate-spin" : ""} />
                 </button>
@@ -302,8 +325,8 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
               />
               {fetchError && <p className="mt-1 text-[10px] text-rose-400">{fetchError}</p>}
               {fetched.length > 0 && (
-                <div className="mt-1.5 rounded-lg border border-white/10 bg-neutral-900 p-1.5">
-                  <div className="mb-1 flex items-center gap-1.5 rounded-md bg-neutral-800 px-2">
+                <div className="mt-1.5 rounded-[var(--radius-inner)] border border-white/10 bg-neutral-900 p-1.5">
+                  <div className="mb-1 flex items-center gap-1.5 rounded-[var(--radius-control)] bg-neutral-800 px-2">
                     <Search size={11} className="text-white/35" />
                     <input
                       value={filter}
@@ -341,7 +364,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                 step={128}
                 value={draft.max_tokens}
                 onChange={(event) => setDraft({ ...draft, max_tokens: Math.max(128, Number(event.target.value) || 128) })}
-                className={`${FIELD} w-24 text-right font-mono`}
+                className={`${FIELD} min-w-0 flex-1 text-right font-mono [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`}
               />
             </div>
           </div>
@@ -356,7 +379,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                   type="button"
                   onClick={() => setDraft({ ...draft, theme: id })}
                   aria-pressed={(draft.theme ?? "auto") === id}
-                  className={`rounded-lg border px-1.5 py-2 text-[10.5px] transition-colors ${
+                  className={`rounded-[var(--radius-inner)] border px-1.5 py-2 text-[10.5px] transition-colors ${
                     (draft.theme ?? "auto") === id ? ACTIVE_BUTTON : IDLE_BUTTON
                   }`}
                 >
@@ -375,7 +398,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                 step={1}
                 value={draft.bg_opacity ?? 100}
                 onChange={(event) => setDraft({ ...draft, bg_opacity: Number(event.target.value) })}
-                className="h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-lg bg-neutral-700 accent-white"
+                className="h-1.5 min-w-0 flex-1 cursor-pointer appearance-none rounded-[var(--radius-inner)] bg-neutral-700 accent-white"
               />
               <span className="w-9 text-right font-mono text-[10px] text-white/50">{draft.bg_opacity ?? 100}%</span>
             </div>
@@ -390,7 +413,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                     onClick={() => setDraft({ ...draft, position: id })}
                     aria-label={label}
                     aria-pressed={draft.position === id}
-                    className={`flex items-center justify-center gap-1.5 rounded-lg border py-1.5 text-[10px] transition-colors ${
+                    className={`flex items-center justify-center gap-1.5 rounded-[var(--radius-inner)] border py-1.5 text-[10px] transition-colors ${
                       draft.position === id ? ACTIVE_BUTTON : IDLE_BUTTON
                     }`}
                   >
@@ -416,7 +439,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                 onClick={() => void checkUpdates()}
                 disabled={checkingUpdate || updatingSource || buildingPr}
                 aria-label="Check for updates"
-                className="grid h-7 w-7 place-items-center rounded-md text-white/45 hover:bg-white/5 hover:text-white disabled:opacity-50"
+                className="grid h-7 w-7 place-items-center rounded-[var(--radius-control)] text-white/45 hover:bg-white/5 hover:text-white disabled:opacity-50"
               >
                 <RefreshCw size={12} className={checkingUpdate ? "animate-spin" : ""} />
               </button>
@@ -425,7 +448,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                   type="button"
                   onClick={() => void restartApp()}
                   aria-label="Restart"
-                  className="grid h-7 w-7 place-items-center rounded-md bg-white text-black"
+                  className="grid h-7 w-7 place-items-center rounded-[var(--radius-control)] bg-white text-black"
                 >
                   <RefreshCw size={12} />
                 </button>
@@ -435,14 +458,14 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                   onClick={() => void triggerUpdate()}
                   disabled={checkingUpdate || updatingSource || buildingPr}
                   aria-label={updatingSource ? "Updating" : "Update"}
-                  className="grid h-7 w-7 place-items-center rounded-md bg-white text-black disabled:opacity-50"
+                  className="grid h-7 w-7 place-items-center rounded-[var(--radius-control)] bg-white text-black disabled:opacity-50"
                 >
                   {updatingSource ? <RefreshCw size={12} className="animate-spin" /> : <Download size={12} />}
                 </button>
               )}
             </div>
 
-            <details className="rounded-lg border border-white/10 px-2.5 py-2 text-[10.5px] text-white/55">
+            <details className="rounded-[var(--radius-inner)] border border-white/10 px-2.5 py-2 text-[10.5px] text-white/55">
               <summary className="cursor-pointer">PR</summary>
               <div className="mt-2 flex gap-1.5">
                 <input
@@ -461,7 +484,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                   onClick={() => void buildPullRequest()}
                   disabled={!prNumber.trim() || buildingPr || updatingSource || checkingUpdate}
                   aria-label="Build pull request"
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-white/10 bg-neutral-800 text-white/60 disabled:opacity-50"
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-[var(--radius-inner)] border border-white/10 bg-neutral-800 text-white/60 disabled:opacity-50"
                 >
                   {buildingPr ? <RefreshCw size={12} className="animate-spin" /> : <GitPullRequest size={13} />}
                 </button>
@@ -469,17 +492,20 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
               <p className="mt-1.5 text-[9px]">Runs PR code.</p>
             </details>
 
+            {updateLine && (updatingSource || buildingPr) && (
+              <p className="truncate font-mono text-[10px] text-white/45" title={updateLine}>{updateLine}</p>
+            )}
             {updateError && <p className="break-words text-[10px] text-rose-400">{updateError}</p>}
           </div>
         )}
       </div>
 
       {dirty && (
-        <footer className="flex shrink-0 justify-end border-t border-white/10 px-3 py-2">
+        <footer className="flex shrink-0 justify-end border-t border-white/10 px-4 py-2.5">
           <button
             type="button"
             onClick={() => onSave(settingsForSave(draft))}
-            className="accent-action rounded-lg px-3 py-1.5 text-[11px] font-semibold"
+            className="accent-action rounded-[var(--radius-inner)] px-3 py-1.5 text-[11px] font-semibold"
           >
             Save
           </button>
