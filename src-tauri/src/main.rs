@@ -9,6 +9,8 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State, WebviewWindow};
 
+mod theme;
+
 // ─── Settings ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -981,8 +983,7 @@ async fn check_for_updates(state: tauri::State<'_, AppState>) -> Result<UpdateSt
     })
 }
 
-#[tauri::command]
-async fn update_from_source() -> Result<String, String> {
+async fn run_source_update(source_ref: &str, label: &str) -> Result<String, String> {
     let install_path = std::env::current_exe()
         .map_err(|e| format!("Cannot locate the installed Screen AI executable: {e}"))?;
     let updater = install_path
@@ -996,7 +997,7 @@ async fn update_from_source() -> Result<String, String> {
     let output = tokio::process::Command::new("bash")
         .arg(&updater)
         .arg("--ref")
-        .arg("main")
+        .arg(source_ref)
         .arg("--install-path")
         .arg(&install_path)
         .output()
@@ -1013,7 +1014,46 @@ async fn update_from_source() -> Result<String, String> {
             format!("Source update failed: {tail}")
         });
     }
-    Ok(format!("Built from GitHub source and installed at {}", install_path.display()))
+    Ok(format!("Built {label} from GitHub source and installed at {}", install_path.display()))
+}
+
+#[tauri::command]
+async fn update_from_source() -> Result<String, String> {
+    run_source_update("main", "latest main").await
+}
+
+#[tauri::command]
+async fn update_from_pr(state: State<'_, AppState>, pr_number: u64) -> Result<String, String> {
+    if pr_number == 0 {
+        return Err("Enter a valid Screen AI pull request number.".into());
+    }
+    let url = format!("{REPO_API}/pulls/{pr_number}");
+    let response = state
+        .client
+        .get(url)
+        .header("User-Agent", "screen-ai-source-updater")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("Could not fetch pull request #{pr_number} from GitHub: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("GitHub returned HTTP {} for pull request #{pr_number}", response.status()));
+    }
+    let pull_request: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Could not read pull request #{pr_number} metadata: {e}"))?;
+    let base_repo = pull_request["base"]["repo"]["full_name"].as_str().unwrap_or_default();
+    if !base_repo.eq_ignore_ascii_case("bhavyam2468/screen-ai") {
+        return Err(format!("Pull request #{pr_number} is not for bhavyam2468/screen-ai."));
+    }
+    let head_sha = pull_request["head"]["sha"]
+        .as_str()
+        .filter(|sha| sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()))
+        .ok_or_else(|| format!("GitHub did not return a valid source commit for pull request #{pr_number}"))?;
+
+    let label = format!("pull request #{pr_number}");
+    run_source_update(head_sha, &label).await
 }
 
 #[tauri::command]
@@ -1045,142 +1085,11 @@ fn restart_app() -> Result<(), String> {
     std::process::exit(0);
 }
 
-// ─── System theme (follow the desktop: KDE/Qt, GNOME/GTK) ────────────────────────
-
-#[derive(serde::Serialize, Clone, Debug)]
-pub struct SystemTheme {
-    pub dark: bool,
-    /// Accent/selection color as #rrggbb when the desktop exposes one.
-    pub accent: Option<String>,
-}
-
-fn kdeglobals_path() -> Option<PathBuf> {
-    if let Ok(c) = std::env::var("XDG_CONFIG_HOME") {
-        let p = PathBuf::from(c).join("kdeglobals");
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    dirs::home_dir()
-        .map(|h| h.join(".config/kdeglobals"))
-        .filter(|p| p.exists())
-}
-
-/// Minimal INI lookup: value of `key` inside `[section]`.
-fn ini_lookup(path: &PathBuf, section: &str, key: &str) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let mut in_section = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') && line.ends_with(']') && line.len() >= 2 {
-            in_section = line[1..line.len() - 1].eq_ignore_ascii_case(section);
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        let Some((k, v)) = line.split_once('=') else {
-            continue;
-        };
-        if k.trim().eq_ignore_ascii_case(key) {
-            return Some(v.trim().to_string());
-        }
-    }
-    None
-}
-
-fn gsetting(schema: &str, key: &str) -> Option<String> {
-    let out = std::process::Command::new("gsettings")
-        .args(["get", schema, key])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-fn rgb_to_hex(rgb: &str) -> Option<String> {
-    let parts: Vec<u8> = rgb
-        .split(',')
-        .filter_map(|p| p.trim().parse().ok())
-        .collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    Some(format!("#{:02x}{:02x}{:02x}", parts[0], parts[1], parts[2]))
-}
+// ─── System theme (follow the desktop: KDE/Qt, GNOME/GTK) ────────────────────
 
 #[tauri::command]
-fn get_system_theme() -> SystemTheme {
-    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
-        .unwrap_or_default()
-        .to_lowercase();
-    let is_kde = desktop.contains("kde") || desktop.contains("plasma");
-    // Plasma's selection color doubles as an accent even on non-KDE desktops
-    // that theme Qt via kdeglobals (Hyprland + qt6ct, etc.).
-    let kde_accent = kdeglobals_path()
-        .and_then(|p| ini_lookup(&p, "Colors:Selection", "BackgroundNormal"))
-        .as_deref()
-        .and_then(rgb_to_hex);
-
-    // KDE Plasma: ColorScheme name decides light/dark.
-    if is_kde {
-        if let Some(p) = kdeglobals_path() {
-            let scheme = ini_lookup(&p, "General", "ColorScheme").unwrap_or_default();
-            if !scheme.is_empty() {
-                return SystemTheme {
-                    dark: scheme.to_lowercase().contains("dark"),
-                    accent: kde_accent,
-                };
-            }
-        }
-    }
-
-    // GNOME / GTK desktops.
-    if let Some(cs) = gsetting("org.gnome.desktop.interface", "color-scheme") {
-        // 'default' | 'prefer-dark' | 'prefer-light'
-        let accent = gsetting("org.gnome.desktop.interface", "accent-color")
-            .and_then(|a| match a.trim().trim_matches('\'') {
-                "blue" => Some("#3584e4".to_string()),
-                "teal" => Some("#2190a4".to_string()),
-                "green" => Some("#3a944a".to_string()),
-                "yellow" => Some("#c88800".to_string()),
-                "orange" => Some("#ed5b00".to_string()),
-                "red" => Some("#e62d42".to_string()),
-                "pink" => Some("#d56199".to_string()),
-                "purple" => Some("#9141ac".to_string()),
-                "slate" => Some("#6f8396".to_string()),
-                _ => None,
-            })
-            .or(kde_accent.clone());
-        return SystemTheme {
-            dark: cs.contains("dark"),
-            accent,
-        };
-    }
-    if let Some(gtk_theme) = gsetting("org.gnome.desktop.interface", "gtk-theme") {
-        if !gtk_theme.is_empty() {
-            return SystemTheme {
-                dark: gtk_theme.to_lowercase().contains("dark"),
-                accent: kde_accent.clone(),
-            };
-        }
-    }
-
-    // Last resorts: GTK_THEME override, then assume dark (the native look).
-    if let Ok(t) = std::env::var("GTK_THEME") {
-        if !t.is_empty() {
-            return SystemTheme {
-                dark: t.to_lowercase().contains("dark"),
-                accent: kde_accent.clone(),
-            };
-        }
-    }
-    SystemTheme {
-        dark: true,
-        accent: kde_accent,
-    }
+fn get_system_theme() -> theme::SystemTheme {
+    theme::get_system_theme()
 }
 
 // ─── App ─────────────────────────────────────────────────────────────────────
@@ -1348,6 +1257,7 @@ fn main() {
             overlay_hidden,
             check_for_updates,
             update_from_source,
+            update_from_pr,
             restart_app,
             get_system_theme
         ])
