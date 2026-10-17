@@ -1,6 +1,6 @@
 [package]
 name = "screen-ai"
-version = "0.1.0"
+version = "0.2.0"
 description = "Invoke an AI overlay on your screen — screenshot + prompt, streaming reply bubble."
 authors = ["screen-ai"]
 edition = "2021"
