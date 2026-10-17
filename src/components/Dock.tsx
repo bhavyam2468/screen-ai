@@ -1,49 +1,116 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { ArrowUp, Settings2, Loader2 } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronRight,
+  Command,
+  Crosshair,
+  FileText,
+  FolderOpen,
+  KeyRound,
+  Loader2,
+  Moon,
+  Palette,
+  RefreshCw,
+  Settings2,
+  Sun,
+  SunMoon,
+  X,
+} from "lucide-react";
 import ChatPanel, { Msg } from "./ChatPanel";
 import SettingsPanel from "./SettingsPanel";
-import { Settings, SystemTheme, setInteractiveRegions } from "../lib/store";
+import {
+  FileSuggestion,
+  PROVIDERS,
+  ScreenRect,
+  Settings,
+  SettingsSection,
+  searchLocalFiles,
+  setInteractiveRegions,
+} from "../lib/store";
 
 export type Panel = "none" | "chat" | "settings";
 
 const EASE = [0.22, 1, 0.36, 1] as const;
+const LAYOUT_SPRING = { type: "spring", stiffness: 360, damping: 35, mass: 0.88 } as const;
+
+type PaletteItem = { id: string; label: string; value: string; icon: typeof Command };
+type SlashDefinition = { name: string; icon: typeof Command };
+
+const SLASH_COMMANDS: SlashDefinition[] = [
+  { name: "model", icon: KeyRound },
+  { name: "provider", icon: Settings2 },
+  { name: "key", icon: KeyRound },
+  { name: "theme", icon: Palette },
+  { name: "settings", icon: Settings2 },
+  { name: "update", icon: RefreshCw },
+  { name: "capture", icon: Crosshair },
+  { name: "hide", icon: X },
+  { name: "exit", icon: X },
+];
+
+const THEME_OPTIONS: { value: string; label: string; icon: typeof Sun }[] = [
+  { value: "auto", label: "Auto", icon: SunMoon },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "light", label: "Light", icon: Sun },
+  { value: "qt", label: "Qt / Matugen", icon: Palette },
+];
+
+const SETTINGS_OPTIONS = [
+  { value: "model", label: "Model", icon: KeyRound },
+  { value: "appearance", label: "Appearance", icon: Palette },
+  { value: "updates", label: "Updates", icon: RefreshCw },
+];
 
 interface Props {
+  sessionRevision: number;
   panel: Panel;
+  settingsSection: SettingsSection;
   messages: Msg[];
   streaming: boolean;
   error: string | null;
+  notice: string | null;
   thumb: string | null;
+  snipping: boolean;
   settings: Settings;
-  systemTheme: SystemTheme;
   hasUpdate?: boolean;
   onSubmit: (prompt: string) => void;
+  onSettingsSectionChange: (section: SettingsSection) => void;
   onToggleSettings: () => void;
-  onSaveSettings: (s: Settings) => void;
-  onCloseSettings: () => void;
+  onSaveSettings: (settings: Settings) => void;
+  onStartSnip: () => void;
+  onCancelSnip: () => void;
+  onSelectSnip: (rect: ScreenRect) => void;
   onRetry: () => void;
   onDismiss: () => void;
 }
 
-/** Animates its height to follow its content, so panels slide open/closed. */
+/** Measures once per content change and lets the card use one coordinated height transition. */
 function Reveal({ children, instant }: { children: React.ReactNode; instant: boolean }) {
   const inner = useRef<HTMLDivElement>(null);
-  const [h, setH] = useState(0);
+  const [height, setHeight] = useState(0);
+
   useLayoutEffect(() => {
-    const el = inner.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => setH(el.offsetHeight));
-    ro.observe(el);
-    setH(el.offsetHeight);
-    return () => ro.disconnect();
+    const element = inner.current;
+    if (!element) return;
+    const measure = () => setHeight(element.offsetHeight);
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    measure();
+    return () => observer.disconnect();
   }, []);
+
   return (
     <motion.div
       initial={{ height: 0, opacity: 0 }}
-      animate={{ height: h, opacity: 1 }}
+      animate={{ height, opacity: 1 }}
       exit={{ height: 0, opacity: 0 }}
-      transition={{ duration: instant ? 0 : 0.24, ease: EASE }}
+      transition={
+        instant
+          ? { duration: 0 }
+          : { height: { duration: 0.3, ease: EASE }, opacity: { duration: 0.17, ease: "easeOut" } }
+      }
       className="overflow-hidden"
     >
       <div ref={inner}>{children}</div>
@@ -51,182 +118,601 @@ function Reveal({ children, instant }: { children: React.ReactNode; instant: boo
   );
 }
 
+function findFileTrigger(value: string, caret: number) {
+  const before = value.slice(0, caret);
+  const braced = /(?:^|\s)@\{([^}\n]*)$/.exec(before);
+  const plain = braced ? null : /(?:^|\s)@([^\s]*)$/.exec(before);
+  const match = braced ?? plain;
+  if (!match) return null;
+  return {
+    query: match[1],
+    start: match.index + match[0].lastIndexOf("@"),
+  };
+}
+
+function isSafePathToken(path: string) {
+  return /^[\w./~+-]+$/u.test(path);
+}
+
+function FilePicker({
+  items,
+  loading,
+  activeIndex,
+  onChoose,
+  onHighlight,
+}: {
+  items: FileSuggestion[];
+  loading: boolean;
+  activeIndex: number;
+  onChoose: (item: FileSuggestion) => void;
+  onHighlight: (index: number) => void;
+}) {
+  return (
+    <div className="omnibox-panel" role="listbox" aria-label="Local files" aria-busy={loading}>
+      {loading ? (
+        <div className="omnibox-loading"><Loader2 size={14} className="animate-spin" /></div>
+      ) : (
+        <div className="omnibox-list">
+          {items.map((item, index) => {
+            const Icon = item.is_dir ? FolderOpen : FileText;
+            return (
+              <button
+                key={item.path}
+                type="button"
+                role="option"
+                aria-selected={activeIndex === index}
+                className={`omnibox-row ${activeIndex === index ? "is-active" : ""}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => onHighlight(index)}
+                onClick={() => onChoose(item)}
+              >
+                <span className="omnibox-icon"><Icon size={14} /></span>
+                <span className="omnibox-label">{item.name}</span>
+                <span className="omnibox-hint">{item.path.replace(/^\/home\/[^/]+/, "~")}</span>
+                {item.is_dir && <ChevronRight size={12} className="omnibox-more" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Dock(p: Props) {
   const [value, setValue] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [caret, setCaret] = useState(0);
+  const [highlighted, setHighlighted] = useState(0);
+  const [dismissed, setDismissed] = useState(false);
+  const [forcedCommands, setForcedCommands] = useState(false);
+  const [forcedQuery, setForcedQuery] = useState("");
+  const [fileItems, setFileItems] = useState<FileSuggestion[]>([]);
+  const [searchingFiles, setSearchingFiles] = useState(false);
+  const [selection, setSelection] = useState<ScreenRect | null>(null);
+  const selectionAnchor = useRef<{ x: number; y: number } | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const opacity = (p.settings.bg_opacity ?? 100) / 100;
   const reduced = useReducedMotion() ?? false;
 
-  // Keep the compositor's input region glued to the card: everything outside
-  // it passes clicks through to the apps underneath.
-  const pushRegion = useRef<() => void>(() => {});
+  const fileTrigger = useMemo(() => findFileTrigger(value, caret), [value, caret]);
+  const fileQuery = fileTrigger?.query ?? null;
+  const commandText = value.trimStart();
+  const commandMatch = commandText.match(/^\/([a-z-]*)$/i);
+  const argumentMatch = commandText.match(/^\/(theme|provider|model|key|api-key|settings|preferences)\s+([^\n]*)$/i);
+
+  const paletteItems = useMemo<PaletteItem[]>(() => {
+    if (commandMatch) {
+      const query = commandMatch[1].toLowerCase();
+      return SLASH_COMMANDS
+        .filter((item) => item.name.startsWith(query))
+        .map((item) => ({
+          id: item.name,
+          label: `/${item.name}`,
+          value: `/${item.name}`,
+          icon: item.icon,
+        }));
+    }
+    if (!argumentMatch) {
+      if (!forcedCommands) return [];
+      return SLASH_COMMANDS
+        .filter((item) => item.name.includes(forcedQuery.trim().toLowerCase()))
+        .map((item) => ({
+          id: item.name,
+          label: `/${item.name}`,
+          value: `/${item.name}`,
+          icon: item.icon,
+        }));
+    }
+    const command = argumentMatch[1].toLowerCase();
+    const raw = argumentMatch[2];
+    const query = raw.trim().toLowerCase();
+    if (command === "theme" && !raw.includes(" ")) {
+      return THEME_OPTIONS
+        .filter((item) => item.value.startsWith(query) || item.label.toLowerCase().includes(query))
+        .map((item) => ({ id: item.value, label: item.label, value: `/theme ${item.value}`, icon: item.icon }));
+    }
+    if ((command === "provider" || command === "key" || command === "api-key") && !raw.includes(" ")) {
+      return PROVIDERS
+        .filter((item) => item.id.startsWith(query) || item.label.toLowerCase().includes(query))
+        .map((item) => ({
+          id: item.id,
+          label: item.label,
+          value: command === "provider" ? `/provider ${item.id}` : `/key ${item.id}`,
+          icon: KeyRound,
+        }));
+    }
+    if (command === "model" && !raw.includes(" ")) {
+      return PROVIDERS
+        .filter((item) => item.id.startsWith(query) || item.label.toLowerCase().includes(query))
+        .map((item) => ({ id: item.id, label: item.label, value: `/model ${item.id}`, icon: KeyRound }));
+    }
+    if ((command === "settings" || command === "preferences") && !raw.includes(" ")) {
+      return SETTINGS_OPTIONS
+        .filter((item) => item.value.startsWith(query) || item.label.toLowerCase().includes(query))
+        .map((item) => ({ id: item.value, label: item.label, value: `/settings ${item.value}`, icon: item.icon }));
+    }
+    return [];
+  }, [argumentMatch, commandMatch, forcedCommands, forcedQuery, p.settings.provider, p.settings.provider_profiles]);
+
+  const forcedQueryMode = forcedCommands && !commandMatch && !argumentMatch;
+  const showCommandPalette = (forcedCommands || paletteItems.length > 0) && !dismissed;
+  const showFilePicker = fileTrigger !== null && !showCommandPalette && !dismissed;
+  const activeIndex = Math.min(highlighted, Math.max(0, (showFilePicker ? fileItems.length : paletteItems.length) - 1));
+  const open = p.panel !== "none";
+
   useEffect(() => {
-    const el = cardRef.current;
-    if (!el) return;
-    let raf = 0;
+    setHighlighted(0);
+    setDismissed(false);
+  }, [value]);
+
+  useEffect(() => {
+    setHighlighted(0);
+  }, [forcedQuery]);
+
+  useEffect(() => {
+    if (fileQuery === null || dismissed || showCommandPalette) {
+      setFileItems([]);
+      setSearchingFiles(false);
+      return;
+    }
+    let active = true;
+    setSearchingFiles(true);
+    setFileItems([]);
+    const timer = window.setTimeout(() => {
+      searchLocalFiles(fileQuery)
+        .then((items) => { if (active) setFileItems(items); })
+        .catch(() => { if (active) setFileItems([]); })
+        .finally(() => { if (active) setSearchingFiles(false); });
+    }, 100);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [fileQuery, dismissed, showCommandPalette]);
+
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    input.style.height = "0px";
+    const maxHeight = Math.min(116, Math.max(42, window.innerHeight * 0.18));
+    const nextHeight = Math.min(input.scrollHeight, maxHeight);
+    input.style.height = `${nextHeight}px`;
+    input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [value]);
+
+  // Let clicks pass through everywhere but the card, except while choosing a crop.
+  useEffect(() => {
+    const element = cardRef.current;
+    if (p.snipping) {
+      setInteractiveRegions(
+        [{ x: 0, y: 0, width: window.innerWidth, height: window.innerHeight }],
+        p.sessionRevision,
+      );
+      return;
+    }
+    if (!element) return;
+    let frame = 0;
     const push = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        const r = el.getBoundingClientRect();
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const rect = element.getBoundingClientRect();
         const pad = 6;
-        setInteractiveRegions([
-          {
-            x: Math.max(0, Math.floor(r.left - pad)),
-            y: Math.max(0, Math.floor(r.top - pad)),
-            width: Math.ceil(r.width + pad * 2),
-            height: Math.ceil(r.height + pad * 2),
-          },
-        ]);
+        setInteractiveRegions([{
+          x: Math.max(0, Math.floor(rect.left - pad)),
+          y: Math.max(0, Math.floor(rect.top - pad)),
+          width: Math.ceil(rect.width + pad * 2),
+          height: Math.ceil(rect.height + pad * 2),
+        }], p.sessionRevision);
       });
     };
-    pushRegion.current = push;
-    const ro = new ResizeObserver(push);
-    ro.observe(el);
+    const observer = new ResizeObserver(push);
+    observer.observe(element);
     window.addEventListener("resize", push);
     push();
     return () => {
-      cancelAnimationFrame(raf);
-      ro.disconnect();
+      cancelAnimationFrame(frame);
+      observer.disconnect();
       window.removeEventListener("resize", push);
     };
-  }, []);
+  }, [p.snipping, p.sessionRevision]);
 
-  // Grab keyboard focus whenever the overlay is (re)summoned.
+  // The overlay is summoned focused; when a panel closes, return focus to the one input.
   useEffect(() => {
-    const focus = () => inputRef.current?.focus();
-    const t = setTimeout(focus, 90);
-    window.addEventListener("focus", focus);
-    return () => {
-      clearTimeout(t);
-      window.removeEventListener("focus", focus);
+    if (p.panel !== "settings" && !p.snipping) inputRef.current?.focus();
+  }, [p.panel, p.snipping]);
+
+  useEffect(() => {
+    if (p.snipping || p.panel === "settings") {
+      setForcedCommands(false);
+      setForcedQuery("");
+      setDismissed(true);
+    }
+  }, [p.panel, p.snipping]);
+
+  // Ctrl/Cmd+K opens the command palette directly in the input bar.
+  useEffect(() => {
+    const onGlobalKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k" && !p.snipping) {
+        event.preventDefault();
+        inputRef.current?.focus();
+        if (forcedCommands) {
+          setForcedCommands(false);
+          setDismissed(true);
+        } else {
+          setForcedCommands(true);
+          setForcedQuery("");
+          setDismissed(false);
+        }
+      }
     };
-  }, []);
-
-  useEffect(() => {
-    if (p.panel !== "settings") inputRef.current?.focus();
-  }, [p.panel]);
+    window.addEventListener("keydown", onGlobalKey);
+    return () => window.removeEventListener("keydown", onGlobalKey);
+  }, [p.snipping, forcedCommands]);
 
   const submit = () => {
-    const v = value.trim();
-    if (!v || p.streaming) return;
-    p.onSubmit(v);
+    const prompt = value.trim();
+    if (!prompt || p.streaming) return;
+    p.onSubmit(prompt);
     setValue("");
+    setCaret(0);
+    setDismissed(false);
+    setForcedCommands(false);
+    setForcedQuery("");
+    setFileItems([]);
   };
 
-  const open = p.panel !== "none";
-  const canSend = value.trim().length > 0 && !p.streaming;
+  const choosePaletteItem = (item: PaletteItem) => {
+    const keepDraft = forcedCommands && !value.trimStart().startsWith("/");
+    if (!keepDraft) {
+      setValue("");
+      setCaret(0);
+    }
+    setForcedCommands(false);
+    setForcedQuery("");
+    setDismissed(false);
+    p.onSubmit(item.value);
+  };
+
+  const chooseFile = (item: FileSuggestion) => {
+    if (!fileTrigger) return;
+    const path = `${item.path}${item.is_dir ? "/" : ""}`;
+    const mention = isSafePathToken(path)
+      ? `@${path}`
+      : item.is_dir
+        ? `@{${path}`
+        : `@{${path}}`;
+    const tail = item.is_dir ? "" : " ";
+    const next = value.slice(0, fileTrigger.start) + mention + tail + value.slice(caret);
+    const nextCaret = fileTrigger.start + mention.length + tail.length;
+    setValue(next);
+    setCaret(nextCaret);
+    setDismissed(false);
+    setFileItems([]);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(nextCaret, nextCaret);
+    });
+  };
+
+  const onInputKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const suggestionsOpen = showCommandPalette || showFilePicker;
+    const suggestionCount = showFilePicker ? fileItems.length : paletteItems.length;
+    if (suggestionsOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      setHighlighted((index) => {
+        if (!suggestionCount) return 0;
+        return event.key === "ArrowDown"
+          ? (index + 1) % suggestionCount
+          : (index - 1 + suggestionCount) % suggestionCount;
+      });
+      return;
+    }
+    if (suggestionsOpen && (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing))) {
+      if (suggestionCount) {
+        event.preventDefault();
+        if (showFilePicker) chooseFile(fileItems[activeIndex]);
+        else choosePaletteItem(paletteItems[activeIndex]);
+        return;
+      }
+      if (event.key === "Enter" && forcedQueryMode) {
+        event.preventDefault();
+        return;
+      }
+    }
+    if (forcedQueryMode && !event.nativeEvent.isComposing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (event.key === "Enter" || event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        return;
+      }
+      if (event.key === "Backspace") {
+        event.preventDefault();
+        setForcedQuery((query) => query.slice(0, -1));
+        return;
+      }
+      if (event.key.length === 1) {
+        event.preventDefault();
+        setForcedQuery((query) => query + event.key);
+        return;
+      }
+    }
+    if (suggestionsOpen && event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setDismissed(true);
+      setForcedCommands(false);
+      setForcedQuery("");
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      submit();
+    }
+  };
 
   return (
-    <motion.div
-      ref={cardRef}
-      initial={reduced ? false : { opacity: 0, y: 10, scale: 0.985 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{
-        opacity: 0,
-        y: 7,
-        scale: 0.99,
-        transition: { duration: reduced ? 0 : 0.15, ease: EASE },
-      }}
-      transition={reduced ? { duration: 0 } : { duration: 0.22, ease: EASE }}
-      onAnimationComplete={() => pushRegion.current()}
-      style={{ backgroundColor: `rgba(var(--window-rgb),${opacity})` }}
-      className="dock-card pointer-events-auto w-[540px] max-w-[calc(100vw-24px)] rounded-2xl border border-white/15 shadow-[0_24px_80px_-28px_rgba(4,10,20,0.76)] overflow-hidden"
-    >
-      <AnimatePresence initial={false}>
-      {open && (
-        <Reveal key="panel" instant={reduced}>
-          <AnimatePresence mode="wait" initial={false}>
-          <motion.div
-            key={p.panel}
-            initial={reduced ? false : { opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduced ? { opacity: 0 } : { opacity: 0, y: -8 }}
-            transition={{ duration: reduced ? 0 : 0.16, ease: EASE }}
+    <>
+      <motion.div
+        ref={cardRef}
+        layout
+        initial={reduced ? false : { opacity: 0, y: 8 }}
+        animate={{ opacity: p.snipping ? 0 : 1, y: 0 }}
+        exit={{ opacity: 0, y: 4, transition: { duration: reduced ? 0 : 0.13, ease: EASE } }}
+        transition={reduced ? { duration: 0 } : { ...LAYOUT_SPRING, opacity: { duration: 0.16, ease: "easeOut" } }}
+        onLayoutAnimationComplete={() => {
+          const rect = cardRef.current?.getBoundingClientRect();
+          if (!rect || p.snipping) return;
+          setInteractiveRegions([{
+            x: Math.max(0, Math.floor(rect.left - 6)),
+            y: Math.max(0, Math.floor(rect.top - 6)),
+            width: Math.ceil(rect.width + 12),
+            height: Math.ceil(rect.height + 12),
+          }], p.sessionRevision);
+        }}
+        style={{
+          backgroundColor: `rgba(var(--window-rgb),${opacity})`,
+          width: showCommandPalette ? "min(760px, calc(100vw - 24px))" : "min(540px, calc(100vw - 24px))",
+          visibility: p.snipping ? "hidden" : "visible",
+        }}
+        className="dock-card pointer-events-auto relative z-10 max-w-[calc(100vw-24px)] overflow-hidden rounded-[18px] border border-white/15 shadow-[0_24px_80px_-28px_rgba(4,10,20,0.72)]"
+      >
+        <AnimatePresence initial={false}>
+          {open && (
+            <Reveal key="panel-reveal" instant={reduced}>
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={p.panel}
+                  initial={reduced ? false : { opacity: 0, y: 7 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={reduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
+                  transition={reduced ? { duration: 0 } : { duration: 0.19, ease: EASE }}
+                >
+                  {p.panel === "settings" ? (
+                    <SettingsPanel
+                      settings={p.settings}
+                      section={p.settingsSection}
+                      onSectionChange={p.onSettingsSectionChange}
+                      onSave={p.onSaveSettings}
+                    />
+                  ) : (
+                    <ChatPanel
+                      messages={p.messages}
+                      streaming={p.streaming}
+                      error={p.error}
+                      onClose={p.onDismiss}
+                      onRetry={p.onRetry}
+                    />
+                  )}
+                </motion.div>
+              </AnimatePresence>
+            </Reveal>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence initial={false}>
+          {(showCommandPalette || showFilePicker) && (
+            <motion.div
+              key={showFilePicker ? "file-picker" : "command-picker"}
+              initial={{ height: 0, opacity: 0, y: 4 }}
+              animate={{ height: "auto", opacity: 1, y: 0 }}
+              exit={{ height: 0, opacity: 0, y: 3 }}
+              transition={reduced ? { duration: 0 } : { height: { duration: 0.26, ease: EASE }, opacity: { duration: 0.16, ease: "easeOut" }, y: { duration: 0.2, ease: EASE } }}
+              className="overflow-hidden"
+            >
+              {showFilePicker ? (
+                <FilePicker
+                  items={fileItems}
+                  loading={searchingFiles}
+                  activeIndex={activeIndex}
+                  onChoose={chooseFile}
+                  onHighlight={setHighlighted}
+                />
+              ) : (
+                <div className="omnibox-panel">
+                  {forcedQueryMode && forcedQuery && <div className="omnibox-query">{forcedQuery}</div>}
+                  <div className="omnibox-list" role="listbox" aria-label="Commands">
+                    {paletteItems.map((item, index) => {
+                      const Icon = item.icon;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          role="option"
+                          aria-selected={activeIndex === index}
+                          className={`omnibox-row ${activeIndex === index ? "is-active" : ""}`}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onMouseEnter={() => setHighlighted(index)}
+                          onClick={() => choosePaletteItem(item)}
+                        >
+                          <span className="omnibox-icon"><Icon size={14} /></span>
+                          <span className="omnibox-label">{item.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence initial={false}>
+          {p.notice && !p.snipping && (
+            <motion.div
+              key="notice"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={reduced ? { duration: 0 } : { duration: 0.18, ease: EASE }}
+              className="overflow-hidden"
+            >
+              <div className="dock-notice"><Check size={12} /><span>{p.notice}</span></div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className={`dock-inputbar flex items-end gap-2 px-3 py-2.5 transition-colors ${open ? "border-t border-white/10" : "border-t border-transparent"}`}>
+          <button
+            type="button"
+            onClick={p.onStartSnip}
+            aria-label="Select a region from this screenshot"
+            className="shot-button group relative mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-white/15 bg-neutral-800 transition-[border-color,transform] duration-200 hover:-translate-y-px hover:border-white/30"
           >
-            {p.panel === "settings" ? (
-              <SettingsPanel
-                settings={p.settings}
-                systemTheme={p.systemTheme}
-                onSave={p.onSaveSettings}
-                onClose={p.onCloseSettings}
-              />
+            {p.thumb ? (
+              <>
+                <img src={p.thumb} alt="" draggable={false} className="h-full w-full object-cover" />
+                <span className="shot-hover"><Crosshair size={13} /></span>
+              </>
             ) : (
-              <ChatPanel
-                messages={p.messages}
-                streaming={p.streaming}
-                error={p.error}
-                model={p.settings.model}
-                onClose={p.onDismiss}
-                onRetry={p.onRetry}
+              <Crosshair size={14} className="text-white/45" />
+            )}
+            {!p.thumb && <Loader2 size={11} className="absolute bottom-0.5 right-0.5 animate-spin text-white/30" />}
+          </button>
+
+          <textarea
+            ref={inputRef}
+            rows={1}
+            value={value}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setCaret(event.target.selectionStart);
+            }}
+            onSelect={(event) => setCaret((event.target as HTMLTextAreaElement).selectionStart)}
+            onKeyDown={onInputKeyDown}
+            placeholder="Ask…"
+            aria-label="Ask about your screen"
+            aria-expanded={showCommandPalette || showFilePicker}
+            spellCheck={false}
+            className="dock-textarea min-w-0 flex-1 resize-none bg-transparent px-1 py-1.5 text-[13px] leading-[1.45] text-white placeholder:text-white/30"
+          />
+
+          <button
+            type="button"
+            onClick={p.onToggleSettings}
+            aria-label={p.panel === "settings" ? "Close settings" : "Open settings"}
+            className={`mb-0.5 relative flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 ${
+              p.panel === "settings" ? "text-white" : "text-white/40 hover:bg-white/5 hover:text-white"
+            }`}
+          >
+            <Settings2 size={15} strokeWidth={1.8} />
+            {p.hasUpdate && <span className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-amber-400 ring-2 ring-black" />}
+          </button>
+
+          <motion.button
+            type="button"
+            onClick={submit}
+            disabled={!value.trim() || p.streaming}
+            whileTap={reduced ? undefined : { scale: 0.94 }}
+            aria-label="Send prompt"
+            className={`mb-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 disabled:opacity-35 ${
+              value.trim() && !p.streaming ? "accent-action" : "text-white/40"
+            }`}
+          >
+            <ArrowUp size={16} strokeWidth={2.4} />
+          </motion.button>
+        </div>
+      </motion.div>
+
+      <AnimatePresence>
+        {p.snipping && (
+          <motion.div
+            key="screen-snipping"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={reduced ? { duration: 0 } : { duration: 0.12, ease: "easeOut" }}
+            className="screen-snipping"
+            style={{ cursor: "crosshair" }}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              const anchor = { x: event.clientX, y: event.clientY };
+              selectionAnchor.current = anchor;
+              setSelection({ ...anchor, width: 0, height: 0 });
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={(event) => {
+              const anchor = selectionAnchor.current;
+              if (!anchor || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+              setSelection({
+                x: Math.min(anchor.x, event.clientX),
+                y: Math.min(anchor.y, event.clientY),
+                width: Math.abs(event.clientX - anchor.x),
+                height: Math.abs(event.clientY - anchor.y),
+              });
+            }}
+            onPointerUp={(event) => {
+              const anchor = selectionAnchor.current;
+              selectionAnchor.current = null;
+              if (!anchor) return;
+              const finalSelection = {
+                x: Math.min(anchor.x, event.clientX),
+                y: Math.min(anchor.y, event.clientY),
+                width: Math.abs(event.clientX - anchor.x),
+                height: Math.abs(event.clientY - anchor.y),
+              };
+              if (finalSelection.width < 6 || finalSelection.height < 6) {
+                setSelection(null);
+                return;
+              }
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+              p.onSelectSnip(finalSelection);
+              setSelection(null);
+            }}
+            onPointerCancel={() => { selectionAnchor.current = null; setSelection(null); }}
+          >
+            <div className="snip-shade" />
+            {selection && selection.width > 0 && selection.height > 0 && (
+              <div
+                className="snip-selection"
+                style={{ left: selection.x, top: selection.y, width: selection.width, height: selection.height }}
               />
             )}
-            </motion.div>
-          </AnimatePresence>
-        </Reveal>
-      )}
+            <div className="snip-hud" onPointerDown={(event) => event.stopPropagation()}>
+              <button type="button" onClick={p.onCancelSnip} aria-label="Cancel screenshot selection"><X size={13} /></button>
+            </div>
+          </motion.div>
+        )}
       </AnimatePresence>
-
-      <div
-        className={`dock-inputbar flex items-center gap-2.5 px-3 py-2 transition-[border-color] duration-300 border-t ${
-          open ? "border-white/10" : "border-transparent"
-        }`}
-      >
-        <div className="shrink-0 w-7 h-7 rounded-lg overflow-hidden bg-neutral-800 border border-white/30 flex items-center justify-center">
-          {p.thumb ? (
-            <motion.img
-              key="thumb"
-              src={p.thumb}
-              alt=""
-              draggable={false}
-              initial={reduced ? false : { scale: 0.5, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={reduced ? { duration: 0 } : { duration: 0.18, ease: EASE }}
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <Loader2 size={13} className="text-white/50 animate-spin" />
-          )}
-        </div>
-
-        <input
-          ref={inputRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submit();
-          }}
-          placeholder={p.messages.length ? "Ask a follow-up…" : "Ask about your screen…"}
-          aria-label="Ask a question about your screen"
-          spellCheck={false}
-          className="flex-1 bg-transparent text-[13px] placeholder:text-white/30 text-white"
-        />
-
-        <button
-          onClick={p.onToggleSettings}
-          aria-label={p.panel === "settings" ? "Close settings" : "Open settings"}
-          className={`relative p-1 rounded-md transition-colors duration-150 ${
-            p.panel === "settings" ? "text-white" : "text-white/40 hover:text-white"
-          }`}
-        >
-          <Settings2 size={15} strokeWidth={1.8} />
-          {p.hasUpdate && (
-            <span className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400 ring-2 ring-black" />
-          )}
-        </button>
-
-        <motion.button
-          onClick={submit}
-          disabled={!canSend}
-          whileTap={reduced ? undefined : { scale: 0.96 }}
-          aria-label="Send prompt"
-          className={`p-1.5 rounded-lg flex items-center justify-center transition-colors duration-150 disabled:opacity-35 ${
-            canSend ? "accent-action" : "text-white/40"
-          }`}
-        >
-          <ArrowUp size={16} strokeWidth={2.4} />
-        </motion.button>
-      </div>
-    </motion.div>
+    </>
   );
 }

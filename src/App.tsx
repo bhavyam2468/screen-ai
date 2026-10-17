@@ -5,15 +5,23 @@ import Dock, { Panel } from "./components/Dock";
 import type { Msg } from "./components/ChatPanel";
 import {
   DEFAULT_SETTINGS,
+  PROVIDERS,
   Settings,
+  SettingsSection,
   askAi,
+  cropScreenshot,
   getInitialState,
   getSettings,
   inTauri,
   overlayHidden,
+  quitApp,
   saveSettings,
   checkForUpdates,
   getSystemTheme,
+  normalizeSettings,
+  selectProvider,
+  settingsForSave,
+  updateProviderProfile,
   SystemTheme,
 } from "./lib/store";
 
@@ -53,8 +61,14 @@ function contrastingText(color: string): string {
 export default function App() {
   const [visible, setVisible] = useState(false);
   const [panel, setPanel] = useState<Panel>("none");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("model");
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [thumb, setThumb] = useState<string | null>(null);
+  const [desktopBackground, setDesktopBackground] = useState<string | null>(null);
+  const [sessionRevision, setSessionRevision] = useState(0);
+  const sessionRevisionRef = useRef<number | null>(null);
+  const [snipping, setSnipping] = useState(false);
+  const [commandNotice, setCommandNotice] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,14 +95,34 @@ export default function App() {
 
   const afterSettings = (): Panel => (msgRef.current.length ? "chat" : "none");
 
-  const summon = useCallback((p: { thumb?: string; view?: string }) => {
-    getSettings().then(setSettings);
+  const summon = useCallback((p: {
+    thumb?: string;
+    background?: string;
+    view?: string;
+    overlay_revision?: number;
+  }) => {
+    const revision = p.overlay_revision ?? 0;
+    if (sessionRevisionRef.current !== null && revision <= sessionRevisionRef.current) return;
+    sessionRevisionRef.current = revision;
+    getSettings().then((next) => {
+      settingsRef.current = next;
+      setSettings(next);
+    });
     getSystemTheme().then(setSysTheme).catch(() => {});
     setThumb(p.thumb || null);
+    setDesktopBackground(p.background || null);
+    setSessionRevision(p.overlay_revision ?? 0);
     update(() => []);
     setError(null);
+    setCommandNotice(null);
+    setSnipping(false);
     setStreaming(false);
-    setPanel(p.view === "settings" ? "settings" : "none");
+    if (p.view === "settings") {
+      setSettingsSection("model");
+      setPanel("settings");
+    } else {
+      setPanel("none");
+    }
     setVisible(true);
   }, []);
 
@@ -96,8 +130,17 @@ export default function App() {
     (async () => {
       try {
         const init = await getInitialState();
-        setSettings(init.settings);
-        if (init.shown) summon({ thumb: init.thumb, view: init.view });
+        const normalized = normalizeSettings(init.settings);
+        settingsRef.current = normalized;
+        setSettings(normalized);
+        if (init.shown) {
+          summon({
+            thumb: init.thumb,
+            background: init.background,
+            view: init.view,
+            overlay_revision: init.overlay_revision,
+          });
+        }
       } catch {
         getSettings().then(setSettings);
       }
@@ -109,9 +152,17 @@ export default function App() {
     }
     const unsubs: (() => void)[] = [];
     (async () => {
-      unsubs.push(await listen<{ thumb: string; view: string }>("summon", (e) => summon(e.payload)));
+      unsubs.push(await listen<{
+        thumb: string;
+        background: string;
+        view: string;
+        overlay_revision: number;
+      }>("summon", (e) => summon(e.payload)));
       unsubs.push(await listen("request-hide", () => setVisible(false)));
-      unsubs.push(await listen("show-settings", () => setPanel("settings")));
+      unsubs.push(await listen("show-settings", () => {
+        setSettingsSection("model");
+        setPanel("settings");
+      }));
       unsubs.push(
         await listen<string>("ai-chunk", (e) =>
           update((m) => {
@@ -148,6 +199,7 @@ export default function App() {
   const submit = useCallback(async (prompt: string, base?: Msg[]) => {
     const s = settingsRef.current;
     if (s.provider !== "ollama" && !s.api_key.trim()) {
+      setSettingsSection("model");
       setPanel("settings");
       return;
     }
@@ -187,28 +239,178 @@ export default function App() {
     submit(lastUser.text, m.slice(0, idx));
   }, [submit]);
 
-  const save = useCallback(async (s: Settings) => {
-    setSettings(s);
-    await saveSettings(s);
+  const persistFromCommand = async (nextValue: Settings) => {
+    const next = settingsForSave(nextValue);
+    settingsRef.current = next;
+    setSettings(next);
+    try {
+      await saveSettings(next);
+      setCommandNotice(null);
+    } catch (err) {
+      setCommandNotice(`Could not save: ${String(err)}`);
+    }
     setPanel(afterSettings());
+  };
+
+  const save = useCallback(async (value: Settings) => {
+    const next = settingsForSave(value);
+    settingsRef.current = next;
+    setSettings(next);
+    try {
+      await saveSettings(next);
+      setCommandNotice(null);
+      setPanel(afterSettings());
+    } catch (err) {
+      setCommandNotice(`Could not save settings: ${String(err)}`);
+    }
   }, []);
 
+  const openSettings = (section: SettingsSection = "model") => {
+    setSettingsSection(section);
+    setPanel("settings");
+  };
+
+  const providerFor = (name: string) =>
+    PROVIDERS.find((provider) => provider.id === name.toLowerCase() || provider.label.toLowerCase() === name.toLowerCase());
+
+  const runSlashCommand = async (raw: string) => {
+    const [command = "", ...args] = raw.trim().replace(/^\/+/, "").split(/\s+/);
+    const name = command.toLowerCase();
+    const current = settingsRef.current;
+    const providerArg = args[0] ? providerFor(args[0]) : undefined;
+
+    if (name === "model") {
+      if (!args.length) return openSettings("model");
+      if (providerArg && args.length === 1) {
+        const next = selectProvider(current, providerArg.id);
+        await persistFromCommand(next);
+        return;
+      }
+      if (providerArg) {
+        const selected = selectProvider(current, providerArg.id);
+        const next = updateProviderProfile(selected, providerArg.id, { model: args.slice(1).join(" ") });
+        await persistFromCommand(next);
+        return;
+      }
+      const next = updateProviderProfile(current, current.provider, { model: args.join(" ") });
+      await persistFromCommand(next);
+      return;
+    }
+
+    if (name === "provider") {
+      if (!args.length) return openSettings("model");
+      if (!providerArg) {
+        setCommandNotice(`Unknown provider “${args[0]}”. Try /provider gemini, openai, openrouter, or ollama.`);
+        return;
+      }
+      const next = selectProvider(current, providerArg.id);
+      await persistFromCommand(next);
+      return;
+    }
+
+    if (name === "key" || name === "api-key") {
+      if (!args.length) return openSettings("model");
+      const provider = providerArg ?? PROVIDERS.find((item) => item.id === current.provider);
+      const key = providerArg ? args.slice(1).join(" ") : args.join(" ");
+      if (!provider) return openSettings("model");
+      if (!key) {
+        if (provider.id !== current.provider) {
+          const selected = selectProvider(current, provider.id);
+          await persistFromCommand(selected);
+        }
+        openSettings("model");
+        return;
+      }
+      const next = updateProviderProfile(current, provider.id, { api_key: key });
+      await persistFromCommand(next);
+      return;
+    }
+
+    if (name === "theme") {
+      if (!args.length) return openSettings("appearance");
+      const requested = args[0].toLowerCase();
+      const theme = requested === "matugen" || requested === "qt/matugen" ? "qt" : requested === "system" ? "auto" : requested;
+      if (!["auto", "dark", "light", "qt"].includes(theme)) {
+        setCommandNotice("Theme options: auto, dark, light, or qt. Example: /theme qt");
+        return;
+      }
+      await persistFromCommand({ ...current, theme: theme as Settings["theme"] });
+      return;
+    }
+
+    if (name === "settings" || name === "preferences") {
+      const section = args[0]?.toLowerCase();
+      openSettings(section === "appearance" || section === "theme" ? "appearance" : section === "update" || section === "updates" ? "updates" : "model");
+      return;
+    }
+
+    if (name === "update" || name === "updates") {
+      openSettings("updates");
+      return;
+    }
+
+    if (name === "capture" || name === "snip") {
+      setSnipping(true);
+      return;
+    }
+
+    if (name === "hide" || name === "dismiss") {
+      setVisible(false);
+      return;
+    }
+
+    if (name === "exit" || name === "quit") {
+      if (inTauri) await quitApp();
+      else setVisible(false);
+      return;
+    }
+
+    setCommandNotice(`Unknown command “/${name}”. Type / to browse commands.`);
+  };
+
   const dismiss = useCallback(() => setVisible(false), []);
+
+  const cropSelection = async (rect: { x: number; y: number; width: number; height: number }) => {
+    if (!inTauri) {
+      setCommandNotice("Screen-region capture is available in the installed Linux app.");
+      setSnipping(false);
+      return;
+    }
+    try {
+      const nextThumb = await cropScreenshot(rect, { width: window.innerWidth, height: window.innerHeight });
+      if (nextThumb) setThumb(nextThumb);
+    } catch (err) {
+      setCommandNotice(`Could not crop screenshot: ${String(err)}`);
+    } finally {
+      setSnipping(false);
+    }
+  };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        if (snipping) {
+          setSnipping(false);
+          return;
+        }
         if (panel === "settings") setPanel(afterSettings());
         else setVisible(false);
       }
       if ((e.ctrlKey || e.metaKey) && e.key === ",") {
         e.preventDefault();
-        setPanel(panel === "settings" ? afterSettings() : "settings");
+        if (panel === "settings") setPanel(afterSettings());
+        else openSettings("model");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [panel]);
+  }, [panel, snipping]);
+
+  useEffect(() => {
+    if (!commandNotice) return;
+    const timer = window.setTimeout(() => setCommandNotice(null), 4200);
+    return () => window.clearTimeout(timer);
+  }, [commandNotice]);
 
   const qtPalette = settings.theme === "qt" ? sysTheme.palette : null;
   const qtDark = qtPalette?.dark ?? sysTheme.dark;
@@ -287,23 +489,42 @@ export default function App() {
       : "items-center";
 
   return (
-    <div className={`fixed inset-0 flex flex-col justify-end pb-6 pointer-events-none ${align}`}>
-      <AnimatePresence onExitComplete={() => overlayHidden()}>
+    <div
+      className={`fixed inset-0 flex flex-col justify-end pb-6 pointer-events-none ${align}`}
+      style={desktopBackground ? {
+        backgroundImage: `url(${desktopBackground})`,
+        backgroundPosition: "center",
+        backgroundRepeat: "no-repeat",
+        backgroundSize: "cover",
+      } : undefined}
+    >
+      <AnimatePresence onExitComplete={() => {
+        void overlayHidden().catch(() => {}).finally(() => setDesktopBackground(null));
+      }}>
         {visible && (
           <Dock
             key="dock"
+            sessionRevision={sessionRevision}
             panel={panel}
+            settingsSection={settingsSection}
             messages={messages}
             streaming={streaming}
             error={error}
+            notice={commandNotice}
             thumb={thumb}
+            snipping={snipping}
             settings={settings}
-            systemTheme={sysTheme}
             hasUpdate={hasUpdate}
-            onSubmit={(p) => submit(p)}
-            onToggleSettings={() => setPanel(panel === "settings" ? afterSettings() : "settings")}
+            onSubmit={(prompt) => {
+              if (prompt.trimStart().startsWith("/")) void runSlashCommand(prompt);
+              else void submit(prompt);
+            }}
+            onSettingsSectionChange={setSettingsSection}
+            onToggleSettings={() => (panel === "settings" ? setPanel(afterSettings()) : openSettings("model"))}
             onSaveSettings={save}
-            onCloseSettings={() => setPanel(afterSettings())}
+            onStartSnip={() => setSnipping(true)}
+            onCancelSnip={() => setSnipping(false)}
+            onSelectSnip={cropSelection}
             onRetry={retry}
             onDismiss={dismiss}
           />

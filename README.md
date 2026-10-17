@@ -44,7 +44,7 @@ When running from a cloned checkout, `bash ./install.sh` or `bash ./setup.sh` fa
 - **Plasma:** shortcut registration is version-sensitive. The installer avoids an occupied shortcut and leaves a clear System Settings fallback when it cannot safely register one.
 - **GNOME, Cinnamon, MATE, and Xfce:** shortcuts use their desktop settings and the tray uses one XDG autostart entry.
 
-Config files reached through symlinks or paths the installer cannot safely edit are left alone. Managed drop-ins have a marker, existing configs receive a first-install `.screen-ai-bak` backup, and unsupported configurations get manual instructions instead of speculative edits. GTK layer-shell is not available in every desktop/session (notably GNOME Wayland and X11); Screen AI keeps a normal-window fallback for those environments.
+Config files reached through symlinks or paths the installer cannot safely edit are left alone. Managed drop-ins have a marker, existing configs receive a first-install `.screen-ai-bak` backup, and unsupported configurations get manual instructions instead of speculative edits. GTK layer-shell is not available in every desktop/session (notably GNOME Wayland and X11); Screen AI keeps a normal-window fallback for those environments. On i3/X11 without a detected compositor, it paints the pre-overlay screen capture behind the card as a visual fallback instead of showing a black fullscreen surface.
 
 ---
 
@@ -56,9 +56,12 @@ Open Screen AI with your configured shortcut (default `Super+Shift+S`) or:
 screen-ai --toggle
 ```
 
-- Ask a question and press **Enter**. Your screenshot is sent with the prompt to the provider you configured.
-- Continue with follow-up questions in the same thread.
-- Open settings with the gear button or `screen-ai --settings`.
+- Ask a question and press **Enter**. Your screenshot is sent with the prompt to the provider you configured; **Shift+Enter** adds a line.
+- Click the screenshot thumbnail for a crosshair snip. Drag over the screen to replace the full-screen image with just that region; press **Esc** to cancel.
+- Type **`/`** to browse commands, or press **Ctrl+K** to open the command palette. Use **↑ / ↓**, **Enter**, and **Tab** without leaving the input bar. Useful commands include `/model`, `/provider openai`, `/key gemini <key>`, `/theme qt`, `/update`, `/capture`, `/hide`, and `/exit` (quit the tray app).
+- Type **`@`** to find and mention a local file. Mentioned files are read-only UTF-8 text, limited to 512 KiB per file and 1 MiB total per request, and are sent to the selected provider as context. Binary files are not attached.
+- Settings are split into **Model**, **Appearance**, and **Updates** subpanels. Gemini, OpenAI, Anthropic, OpenRouter, Groq, Ollama, and custom provider profiles each keep their own API key, endpoint, and model selection.
+- Continue with follow-up questions in the same thread. Open settings with the gear button or `screen-ai --settings`; `Ctrl+,` toggles the settings panel.
 - Dismiss the overlay with **Esc**.
 
 Settings can follow the desktop theme or use a detected **Qt / Matugen** palette. Screen AI reads KDE colors from `~/.config/kdeglobals` and active `qt5ct` / `qt6ct` color-scheme files, then maps window, surface, text, button, selection/accent, and link colors into the overlay. If Matugen writes to one of those active Qt/KDE theme files, its colors are picked up at launch or the next time the overlay is summoned. Matugen templates can write anywhere, so other custom output paths are not guessed. Screen AI is a Tauri WebView rather than a Qt widget app: Qt widget styles, control geometry, and Qt fonts cannot be imported directly; its layout, motion, and Geist typography stay Screen AI's own.
