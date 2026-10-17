@@ -251,7 +251,7 @@ runtime_pkgs() {
     *) [ "$SESSION" = wayland ] && shot=grim || shot=maim ;;
   esac
   case "$PM" in
-    pacman) echo "webkit2gtk-4.1 gtk3 gtk-layer-shell libayatana-appindicator libxdo $shot curl" ;;
+    pacman) echo "webkit2gtk-4.1 gtk3 gtk-layer-shell libayatana-appindicator xdotool $shot curl" ;;
     apt)    echo "libwebkit2gtk-4.1-0 libgtk-3-0 libgtk-layer-shell0 libayatana-appindicator3-1 libxdo3 $shot curl" ;;
     dnf)    echo "webkit2gtk4.1 gtk3 gtk-layer-shell libayatana-appindicator-gtk3 libxdo $shot curl" ;;
     zypper) echo "libwebkit2gtk-4_1-0 gtk3 libgtk-layer-shell0 libayatana-appindicator3-1 libxdo3 $shot curl" ;;
@@ -262,7 +262,7 @@ runtime_pkgs() {
 
 build_pkgs() {
   case "$PM" in
-    pacman) echo "base-devel curl git nodejs npm rust webkit2gtk-4.1 gtk3 gtk-layer-shell libayatana-appindicator librsvg libxdo openssl pkgconf" ;;
+    pacman) echo "base-devel curl git nodejs npm rust webkit2gtk-4.1 gtk3 gtk-layer-shell libayatana-appindicator librsvg xdotool openssl pkgconf" ;;
     apt)    echo "build-essential curl git pkg-config nodejs npm rustc cargo libwebkit2gtk-4.1-dev libgtk-3-dev libgtk-layer-shell-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev" ;;
     dnf)    echo "gcc gcc-c++ make curl git pkgconf-pkg-config nodejs npm rust cargo webkit2gtk4.1-devel gtk3-devel gtk-layer-shell-devel libayatana-appindicator-gtk3-devel librsvg2-devel libxdo-devel openssl-devel" ;;
     zypper) echo "gcc gcc-c++ make curl git pkg-config nodejs npm rust cargo webkit2gtk4_1-devel gtk3-devel gtk-layer-shell-devel libayatana-appindicator3-devel librsvg-devel libxdo-devel libopenssl-devel" ;;
