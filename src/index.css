@@ -267,6 +267,19 @@ body {
    that is already inside the card's single outer border. */
 .dock-card {
   transform-origin: bottom center;
+  border-width: var(--border-width, 2px);
+  border-style: solid;
+  border-color: var(--inactive-border, rgba(169, 190, 220, 0.18));
+  box-shadow: var(--card-shadow, 0 24px 80px -28px rgba(4, 10, 20, 0.72));
+  transition: border-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.dock-card:focus-within,
+.dock-card[data-focused="true"] {
+  border-color: var(--active-border, var(--focus-ring, var(--accent, #94cdf7))) !important;
+  box-shadow: 0 0 0 1.5px var(--active-border, var(--focus-ring, var(--accent, #94cdf7))),
+              0 0 28px -2px var(--focus-glow, rgba(148, 205, 247, 0.35)),
+              var(--card-shadow, 0 24px 80px -28px rgba(4, 10, 20, 0.72)) !important;
 }
 
 /* ══════════════ dark-theme surface and border remaps ══════════════ */

@@ -708,21 +708,13 @@ fn show_overlay(app: &AppHandle) -> Option<u64> {
     });
 
     if is_layer(app) {
-        // Take keyboard focus only for the initial compose, then let the
-        // compositor use normal click-to-focus rules.
+        // Keep exclusive keyboard focus while the overlay is open so the user can immediately type.
         set_keyboard(app, "exclusive", overlay_revision);
-        let owner = app.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(500));
-            let Some(state) = owner.try_state::<AppState>() else {
-                return;
-            };
-            if is_shown(&owner) && state.overlay_revision.load(Ordering::SeqCst) == overlay_revision {
-                set_keyboard(&owner, "ondemand", overlay_revision);
-            }
-        });
     } else if let Some(window) = app.get_webview_window("main") {
         show_fallback(&window);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_focus();
     }
     Some(overlay_revision)
 }

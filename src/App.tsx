@@ -469,9 +469,19 @@ export default function App() {
     const root = document.documentElement;
     const t = sysTheme.tokens;
     const radius = t.radius ?? 18;
+    const innerRadius = t.inner_radius ?? Math.max(4, radius - 4);
+    const controlRadius = t.control_radius ?? Math.max(4, radius - 8);
+    const borderWidth = t.border_width ?? 2;
+    const gap = t.gap ?? 24;
+
     root.style.setProperty("--radius-card", `${radius}px`);
-    root.style.setProperty("--radius-inner", `${Math.max(4, radius - 8)}px`);
-    root.style.setProperty("--radius-control", `${Math.max(4, radius - 12)}px`);
+    root.style.setProperty("--radius-inner", `${innerRadius}px`);
+    root.style.setProperty("--radius-control", `${controlRadius}px`);
+    root.style.setProperty("--border-width", `${borderWidth}px`);
+    root.style.setProperty("--dock-gap", `${gap}px`);
+    if (t.shadow) root.style.setProperty("--card-shadow", t.shadow);
+    else root.style.removeProperty("--card-shadow");
+
     if (t.font) root.style.setProperty("--ui-font", `"${t.font}", "Geist Variable", system-ui, sans-serif`);
     else root.style.removeProperty("--ui-font");
     if (t.mono) root.style.setProperty("--ui-mono", `"${t.mono}", ui-monospace, monospace`);
@@ -489,6 +499,7 @@ export default function App() {
 
   useEffect(() => {
     const root = document.documentElement;
+    const t = sysTheme.tokens;
     const fallbackWindow = dark ? "#151f2d" : "#fafcff";
     const fallbackText = dark ? "#e9eef6" : "#263246";
     const fallbackAccent = dark ? "#82adff" : "#3973d1";
@@ -516,6 +527,9 @@ export default function App() {
     const accentText = normalizeHex(qtPalette?.highlighted_text, contrastingText(accent));
     const link = normalizeHex(qtPalette?.link, accent);
 
+    const activeBorder = t.active_border || accent;
+    const inactiveBorder = t.inactive_border || (dark ? "rgba(169, 190, 220, 0.18)" : "rgba(24, 35, 55, 0.15)");
+
     root.dataset.theme = dark ? "dark" : "light";
     root.dataset.palette = hasQtPalette ? "qt" : "default";
     root.style.setProperty("--window-rgb", colorToRgb(windowColor) || colorToRgb(fallbackWindow)!);
@@ -525,6 +539,10 @@ export default function App() {
     root.style.setProperty("--sel-fg", accentText);
     root.style.setProperty("--focus-ring", rgba(accent, 0.72));
     root.style.setProperty("--focus-glow", rgba(accent, 0.2));
+    root.style.setProperty("--active-border", activeBorder);
+    root.style.setProperty("--inactive-border", inactiveBorder);
+    if (t.urgent_color) root.style.setProperty("--urgent-color", t.urgent_color);
+    else root.style.removeProperty("--urgent-color");
 
     if (hasQtPalette) {
       root.style.setProperty("--qt-window", windowColor);
@@ -554,20 +572,29 @@ export default function App() {
 
   const align =
     settings.position === "bottom-left"
-      ? "items-start pl-6"
+      ? "items-start"
       : settings.position === "bottom-right"
-      ? "items-end pr-6"
+      ? "items-end"
       : "items-center";
+
+  const paddingStyle: React.CSSProperties = {
+    paddingBottom: "var(--dock-gap, 24px)",
+    paddingLeft: settings.position === "bottom-left" ? "var(--dock-gap, 24px)" : undefined,
+    paddingRight: settings.position === "bottom-right" ? "var(--dock-gap, 24px)" : undefined,
+  };
 
   return (
     <div
-      className={`fixed inset-0 flex flex-col justify-end pb-6 pointer-events-none ${align}`}
-      style={desktopBackground ? {
-        backgroundImage: `url(${desktopBackground})`,
-        backgroundPosition: "center",
-        backgroundRepeat: "no-repeat",
-        backgroundSize: "cover",
-      } : undefined}
+      className={`fixed inset-0 flex flex-col justify-end pointer-events-none ${align}`}
+      style={{
+        ...paddingStyle,
+        ...(desktopBackground ? {
+          backgroundImage: `url(${desktopBackground})`,
+          backgroundPosition: "center",
+          backgroundRepeat: "no-repeat",
+          backgroundSize: "cover",
+        } : {}),
+      }}
     >
       <AnimatePresence onExitComplete={() => {
         void overlayHidden().catch(() => {}).finally(() => setDesktopBackground(null));

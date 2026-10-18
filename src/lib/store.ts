@@ -388,11 +388,19 @@ export interface QtPalette {
 export interface ThemeTokens {
   config_path: string;
   radius: number | null;
+  inner_radius: number | null;
+  control_radius: number | null;
+  border_width: number | null;
+  active_border: string | null;
+  inactive_border: string | null;
+  urgent_color: string | null;
+  gap: number | null;
   font: string | null;
   mono: string | null;
   font_size: number | null;
   motion_reduced: boolean;
   speed: number;
+  shadow: string | null;
 }
 
 export interface SystemTheme {
@@ -407,11 +415,19 @@ export interface SystemTheme {
 const FALLBACK_TOKENS: ThemeTokens = {
   config_path: "",
   radius: null,
+  inner_radius: null,
+  control_radius: null,
+  border_width: null,
+  active_border: null,
+  inactive_border: null,
+  urgent_color: null,
+  gap: null,
   font: null,
   mono: null,
   font_size: null,
   motion_reduced: false,
   speed: 1,
+  shadow: null,
 };
 
 export function fallbackSystemTheme(): SystemTheme {

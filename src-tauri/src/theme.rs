@@ -15,7 +15,7 @@
 //! is hidden, so a Matugen run in the background is already applied when the
 //! overlay is summoned again.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -48,6 +48,13 @@ pub struct ThemeTokens {
     pub config_path: String,
     /// Card corner radius in px. Inner radii are derived from it in CSS.
     pub radius: Option<u32>,
+    pub inner_radius: Option<u32>,
+    pub control_radius: Option<u32>,
+    pub border_width: Option<u32>,
+    pub active_border: Option<String>,
+    pub inactive_border: Option<String>,
+    pub urgent_color: Option<String>,
+    pub gap: Option<u32>,
     pub font: Option<String>,
     pub mono: Option<String>,
     pub font_size: Option<f32>,
@@ -55,6 +62,7 @@ pub struct ThemeTokens {
     pub motion_reduced: bool,
     /// Multiplier for animation durations; 1.0 is the default, 2.0 is slower.
     pub speed: f32,
+    pub shadow: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -326,11 +334,18 @@ struct RiceConfig {
     matugen_file: PathBuf,
     explicit: QtPalette,
     radius: Option<u32>,
+    inner_radius: Option<u32>,
+    control_radius: Option<u32>,
+    border_width: Option<u32>,
+    active_border: Option<String>,
+    inactive_border: Option<String>,
+    gap: Option<u32>,
     font: Option<String>,
     mono: Option<String>,
     font_size: Option<f32>,
     motion_reduced: bool,
     speed: f32,
+    shadow: Option<String>,
 }
 
 fn read_rice_config() -> RiceConfig {
@@ -339,6 +354,9 @@ fn read_rice_config() -> RiceConfig {
         ini_value(&ini, section, key)
             .map(|value| unquote(value).to_string())
             .filter(|value| !value.is_empty())
+    };
+    let color = |section: &str, key: &str| {
+        ini_value(&ini, section, key).and_then(color_to_hex)
     };
 
     let source = text("palette", "source")
@@ -356,7 +374,21 @@ fn read_rice_config() -> RiceConfig {
         explicit: section_palette(&ini, "palette"),
         radius: text("shape", "radius")
             .and_then(|value| value.parse::<u32>().ok())
-            .map(|radius| radius.min(40)),
+            .map(|radius| radius.min(48)),
+        inner_radius: text("shape", "inner_radius")
+            .and_then(|value| value.parse::<u32>().ok())
+            .map(|radius| radius.min(48)),
+        control_radius: text("shape", "control_radius")
+            .and_then(|value| value.parse::<u32>().ok())
+            .map(|radius| radius.min(48)),
+        border_width: text("shape", "border_width")
+            .and_then(|value| value.parse::<u32>().ok())
+            .map(|width| width.min(16)),
+        active_border: color("shape", "active_border"),
+        inactive_border: color("shape", "inactive_border"),
+        gap: text("shape", "gap")
+            .and_then(|value| value.parse::<u32>().ok())
+            .map(|gap| gap.min(120)),
         font: text("type", "font"),
         mono: text("type", "mono"),
         font_size: text("type", "size")
@@ -367,6 +399,7 @@ fn read_rice_config() -> RiceConfig {
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|speed| speed.is_finite() && *speed > 0.0 && *speed <= 4.0)
             .unwrap_or(1.0),
+        shadow: text("shape", "shadow").or_else(|| text("shadow", "shadow")),
     }
 }
 
@@ -382,15 +415,61 @@ fn read_matugen_palette(path: &Path) -> Option<QtPalette> {
 
 // ─── GTK ─────────────────────────────────────────────────────────────────────
 
-/// Collects `@define-color name value;` lines. GTK 4 is read first, so its
-/// values win where GTK 3 and GTK 4 both define a name.
+/// Recursively collects `@define-color name value;` lines and follows `@import` rules.
 fn parse_gtk_defines(path: &Path) -> HashMap<String, String> {
     let mut defines = HashMap::new();
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return defines;
+    let mut visited = HashSet::new();
+    parse_gtk_defines_recursive(path, &mut defines, &mut visited, 0);
+    defines
+}
+
+fn parse_gtk_defines_recursive(
+    path: &Path,
+    defines: &mut HashMap<String, String>,
+    visited: &mut HashSet<PathBuf>,
+    depth: usize,
+) {
+    if depth > 8 {
+        return;
+    }
+    let canonical = match path.canonicalize() {
+        Ok(c) => c,
+        Err(_) => path.to_path_buf(),
     };
+    if !visited.insert(canonical) {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let parent = path.parent();
+
     for line in text.lines() {
-        let Some(rest) = line.trim().strip_prefix("@define-color") else {
+        let trimmed = line.trim();
+        // Handle @import url("..."); or @import "...";
+        if let Some(rest) = trimmed.strip_prefix("@import") {
+            let rest = rest.trim().trim_end_matches(';').trim();
+            let import_target = if let Some(url_part) = rest.strip_prefix("url(") {
+                url_part.trim_end_matches(')').trim().trim_matches(|c| c == '\'' || c == '"')
+            } else {
+                rest.trim_matches(|c| c == '\'' || c == '"')
+            };
+            if !import_target.is_empty() {
+                let target_path = if import_target.starts_with('/') {
+                    PathBuf::from(import_target)
+                } else if import_target.starts_with('~') {
+                    expand_path(import_target)
+                } else if let Some(p) = parent {
+                    p.join(import_target)
+                } else {
+                    PathBuf::from(import_target)
+                };
+                parse_gtk_defines_recursive(&target_path, defines, visited, depth + 1);
+            }
+            continue;
+        }
+
+        let Some(rest) = trimmed.strip_prefix("@define-color") else {
             continue;
         };
         let rest = rest.trim().trim_end_matches(';').trim();
@@ -403,7 +482,6 @@ fn parse_gtk_defines(path: &Path) -> HashMap<String, String> {
             defines.insert(name.to_lowercase(), value.to_string());
         }
     }
-    defines
 }
 
 /// Follows `@other_name` references, up to a few hops.
@@ -422,8 +500,16 @@ fn gtk_palette() -> QtPalette {
     let root = config_root();
     let mut defines: HashMap<String, String> = HashMap::new();
     for dir in ["gtk-4.0", "gtk-3.0"] {
-        for (name, value) in parse_gtk_defines(&root.join(dir).join("gtk.css")) {
+        let dir_path = root.join(dir);
+        // Parse main gtk.css first (which will follow @imports recursively)
+        for (name, value) in parse_gtk_defines(&dir_path.join("gtk.css")) {
             defines.entry(name).or_insert(value);
+        }
+        // Also check standalone colors.css and dank-colors.css directly as fallbacks
+        for file in ["dank-colors.css", "colors.css"] {
+            for (name, value) in parse_gtk_defines(&dir_path.join(file)) {
+                defines.entry(name).or_insert(value);
+            }
         }
     }
     if defines.is_empty() {
@@ -736,12 +822,242 @@ fn gsetting(schema: &str, key: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+// ─── Niri Compositor Integration ───────────────────────────────────────────
+
+#[derive(Default, Clone, Debug)]
+pub struct NiriConfig {
+    pub corner_radius: Option<u32>,
+    pub border_width: Option<u32>,
+    pub focus_ring_width: Option<u32>,
+    pub active_color: Option<String>,
+    pub inactive_color: Option<String>,
+    pub urgent_color: Option<String>,
+    pub shadow_css: Option<String>,
+    pub gaps: Option<u32>,
+    pub includes: Vec<PathBuf>,
+}
+
+fn find_niri_config_path() -> Option<PathBuf> {
+    if let Ok(c) = std::env::var("NIRI_CONFIG") {
+        let p = PathBuf::from(c);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let config = config_root().join("niri").join("config.kdl");
+    if config.exists() {
+        Some(config)
+    } else {
+        None
+    }
+}
+
+pub fn read_niri_config() -> NiriConfig {
+    let mut niri = NiriConfig::default();
+    let mut visited = HashSet::new();
+    if let Some(path) = find_niri_config_path() {
+        parse_niri_kdl_recursive(&path, &mut niri, &mut visited, 0);
+    }
+    niri
+}
+
+fn parse_niri_kdl_recursive(
+    path: &Path,
+    niri: &mut NiriConfig,
+    visited: &mut HashSet<PathBuf>,
+    depth: usize,
+) {
+    if depth > 8 {
+        return;
+    }
+    let canonical = match path.canonicalize() {
+        Ok(c) => c,
+        Err(_) => path.to_path_buf(),
+    };
+    if !visited.insert(canonical.clone()) {
+        return;
+    }
+    niri.includes.push(canonical);
+
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let parent = path.parent();
+
+    let mut current_block = String::new();
+    let mut block_depth = 0;
+
+    let mut shadow_softness = None;
+    let mut shadow_spread = None;
+    let mut shadow_offset_x = 0;
+    let mut shadow_offset_y = 5;
+    let mut shadow_color = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+
+        // Handle includes: e.g. include "dms/colors.kdl" or include optional=true "dms/colors.kdl"
+        if trimmed.starts_with("include") {
+            if let Some(start) = trimmed.find('"') {
+                if let Some(end) = trimmed[start + 1..].find('"') {
+                    let inc_str = &trimmed[start + 1..start + 1 + end];
+                    let inc_path = if inc_str.starts_with('/') {
+                        PathBuf::from(inc_str)
+                    } else if inc_str.starts_with('~') {
+                        expand_path(inc_str)
+                    } else if let Some(p) = parent {
+                        p.join(inc_str)
+                    } else {
+                        PathBuf::from(inc_str)
+                    };
+                    if inc_path.exists() {
+                        parse_niri_kdl_recursive(&inc_path, niri, visited, depth + 1);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if trimmed.ends_with('{') {
+            block_depth += 1;
+            let block_name = trimmed.trim_end_matches('{').trim();
+            if block_name.contains("focus-ring") {
+                current_block = "focus-ring".to_string();
+            } else if block_name.contains("border") {
+                current_block = "border".to_string();
+            } else if block_name.contains("shadow") {
+                current_block = "shadow".to_string();
+            }
+        } else if trimmed == "}" {
+            if block_depth > 0 {
+                block_depth -= 1;
+            }
+            if current_block == "shadow" && (shadow_color.is_some() || shadow_softness.is_some()) {
+                let soft = shadow_softness.unwrap_or(30);
+                let spr = shadow_spread.unwrap_or(5);
+                let col = shadow_color.as_deref().unwrap_or("rgba(0,0,0,0.45)");
+                niri.shadow_css = Some(format!("{shadow_offset_x}px {shadow_offset_y}px {soft}px {spr}px {col}"));
+            }
+            current_block.clear();
+        }
+
+        if trimmed.starts_with("geometry-corner-radius") {
+            if let Some(val) = trimmed.strip_prefix("geometry-corner-radius").map(str::trim) {
+                if let Ok(num) = val.parse::<u32>() {
+                    niri.corner_radius = Some(num);
+                }
+            }
+        } else if trimmed.starts_with("gaps") {
+            if let Some(val) = trimmed.strip_prefix("gaps").map(str::trim) {
+                if let Ok(num) = val.parse::<u32>() {
+                    niri.gaps = Some(num);
+                }
+            }
+        } else if trimmed.starts_with("width") {
+            if let Some(val) = trimmed.strip_prefix("width").map(str::trim) {
+                if let Ok(num) = val.parse::<u32>() {
+                    if current_block == "focus-ring" {
+                        niri.focus_ring_width = Some(num);
+                    } else if current_block == "border" {
+                        niri.border_width = Some(num);
+                    }
+                }
+            }
+        } else if trimmed.starts_with("active-color") {
+            if let Some(val) = trimmed.strip_prefix("active-color").map(str::trim) {
+                if let Some(hex) = color_to_hex(val) {
+                    if niri.active_color.is_none() || current_block == "focus-ring" {
+                        niri.active_color = Some(hex);
+                    }
+                }
+            }
+        } else if trimmed.starts_with("inactive-color") {
+            if let Some(val) = trimmed.strip_prefix("inactive-color").map(str::trim) {
+                if let Some(hex) = color_to_hex(val) {
+                    if niri.inactive_color.is_none() || current_block == "focus-ring" {
+                        niri.inactive_color = Some(hex);
+                    }
+                }
+            }
+        } else if trimmed.starts_with("urgent-color") {
+            if let Some(val) = trimmed.strip_prefix("urgent-color").map(str::trim) {
+                if let Some(hex) = color_to_hex(val) {
+                    niri.urgent_color = Some(hex);
+                }
+            }
+        } else if current_block == "shadow" {
+            for token in trimmed.split_whitespace() {
+                if let Some(val) = token.strip_prefix("softness") {
+                    let val = val.trim_start_matches('=').trim();
+                    if let Ok(num) = val.parse::<u32>() {
+                        shadow_softness = Some(num);
+                    }
+                } else if let Some(val) = token.strip_prefix("spread") {
+                    let val = val.trim_start_matches('=').trim();
+                    if let Ok(num) = val.parse::<u32>() {
+                        shadow_spread = Some(num);
+                    }
+                } else if token.starts_with("color") {
+                    if let Some(pos) = trimmed.find("color") {
+                        let rest = trimmed[pos + 5..].trim().trim_start_matches('=').trim();
+                        if let Some(col) = color_to_hex(rest) {
+                            shadow_color = Some(col);
+                        }
+                    }
+                }
+            }
+            if trimmed.contains("softness") {
+                if let Some(pos) = trimmed.find("softness") {
+                    let rest = trimmed[pos + 8..].trim().trim_start_matches('=').trim();
+                    if let Some(first) = rest.split_whitespace().next() {
+                        if let Ok(num) = first.parse::<u32>() {
+                            shadow_softness = Some(num);
+                        }
+                    }
+                }
+            }
+            if trimmed.contains("spread") {
+                if let Some(pos) = trimmed.find("spread") {
+                    let rest = trimmed[pos + 6..].trim().trim_start_matches('=').trim();
+                    if let Some(first) = rest.split_whitespace().next() {
+                        if let Ok(num) = first.parse::<u32>() {
+                            shadow_spread = Some(num);
+                        }
+                    }
+                }
+            }
+            if trimmed.contains("offset") {
+                if let Some(x_pos) = trimmed.find("x=") {
+                    let rest = &trimmed[x_pos + 2..];
+                    if let Some(val) = rest.split_whitespace().next() {
+                        if let Ok(num) = val.parse::<i32>() {
+                            shadow_offset_x = num;
+                        }
+                    }
+                }
+                if let Some(y_pos) = trimmed.find("y=") {
+                    let rest = &trimmed[y_pos + 2..];
+                    if let Some(val) = rest.split_whitespace().next() {
+                        if let Ok(num) = val.parse::<i32>() {
+                            shadow_offset_y = num;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ─── Composition ─────────────────────────────────────────────────────────────
 
 /// Read every theme source and merge them in the order documented at the top
 /// of this file. `source = …` in theme.conf narrows which layers are consulted.
 pub fn get_system_theme() -> SystemTheme {
     let rice = read_rice_config();
+    let niri = read_niri_config();
     let wants = |layer: &str| rice.source == "auto" || rice.source == layer;
 
     let desktop = std::env::var("XDG_CURRENT_DESKTOP")
@@ -774,6 +1090,14 @@ pub fn get_system_theme() -> SystemTheme {
         if palette_has_colors(&palette) {
             layers.push(("gtk", palette));
         }
+    }
+    if (wants("niri") || wants("auto")) && niri.active_color.is_some() {
+        let mut niri_palette = QtPalette::default();
+        niri_palette.highlight = niri.active_color.clone();
+        if let Some(ref inact) = niri.inactive_color {
+            niri_palette.alternate_base = Some(inact.clone());
+        }
+        layers.push(("niri", niri_palette));
     }
 
     let mut merged = QtPalette::default();
@@ -826,6 +1150,16 @@ pub fn get_system_theme() -> SystemTheme {
         palette.as_ref().and_then(|p| p.dark).unwrap_or(true)
     };
 
+    let radius = rice.radius.or(niri.corner_radius);
+    let inner_radius = rice.inner_radius.or_else(|| radius.map(|r| r.saturating_sub(4).max(4)));
+    let control_radius = rice.control_radius.or_else(|| radius.map(|r| r.saturating_sub(8).max(4)));
+    let border_width = rice.border_width.or(niri.focus_ring_width).or(niri.border_width);
+    let active_border = rice.active_border.or(niri.active_color).or_else(|| palette.as_ref().and_then(|p| p.highlight.clone())).or(accent.clone());
+    let inactive_border = rice.inactive_border.or(niri.inactive_color);
+    let urgent_color = niri.urgent_color;
+    let gap = rice.gap.or(niri.gaps);
+    let shadow = rice.shadow.or(niri.shadow_css);
+
     SystemTheme {
         dark,
         accent,
@@ -833,12 +1167,20 @@ pub fn get_system_theme() -> SystemTheme {
         source,
         tokens: ThemeTokens {
             config_path: theme_config_path().to_string_lossy().to_string(),
-            radius: rice.radius,
+            radius,
+            inner_radius,
+            control_radius,
+            border_width,
+            active_border,
+            inactive_border,
+            urgent_color,
+            gap,
             font: rice.font,
             mono: rice.mono,
             font_size: rice.font_size,
             motion_reduced: rice.motion_reduced,
             speed: rice.speed,
+            shadow,
         },
     }
 }
@@ -854,9 +1196,17 @@ fn watched_paths() -> Vec<PathBuf> {
         theme_config_path(),
         rice.matugen_file,
         root.join("kdeglobals"),
-        root.join("gtk-4.0").join("gtk.css"),
-        root.join("gtk-3.0").join("gtk.css"),
     ];
+    for dir in ["gtk-4.0", "gtk-3.0"] {
+        let dir_path = root.join(dir);
+        paths.push(dir_path.join("gtk.css"));
+        paths.push(dir_path.join("colors.css"));
+        paths.push(dir_path.join("dank-colors.css"));
+    }
+    // Also watch pywal / generic matugen cache if present
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home.join(".cache").join("wal").join("colors.json"));
+    }
     for backend in ["qt5ct", "qt6ct"] {
         let conf = root.join(backend).join(format!("{backend}.conf"));
         let scheme = read_ini(&conf)
@@ -864,6 +1214,11 @@ fn watched_paths() -> Vec<PathBuf> {
             .and_then(|name| resolve_qtct_scheme(&root, backend, &name));
         paths.push(conf);
         paths.extend(scheme);
+    }
+    // Watch Niri configs & all included kdl files
+    let niri = read_niri_config();
+    for inc in niri.includes {
+        paths.push(inc);
     }
     paths
 }
@@ -904,7 +1259,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{color_is_dark, color_to_hex, css_color, palette_from_ini, parse_ini, resolve_define, strip_inline_comment, section_palette};
+    use super::*;
     use std::collections::HashMap;
 
     #[test]
@@ -978,5 +1333,36 @@ mod tests {
     fn derives_light_or_dark_from_surface() {
         assert_eq!(color_is_dark("#101010"), Some(true));
         assert_eq!(color_is_dark("#f0f0f0"), Some(false));
+    }
+
+    #[test]
+    fn parses_gtk_defines_recursive_with_imports_and_cycles() {
+        let temp_dir = std::env::temp_dir().join(format!("screen_ai_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let main_css = temp_dir.join("gtk.css");
+        let sub_css = temp_dir.join("sub.css");
+
+        // main imports sub, sub imports main (cycle)
+        let _ = std::fs::write(&main_css, "@import url(\"sub.css\");\n@define-color main_color #112233;\n");
+        let _ = std::fs::write(&sub_css, "@import url(\"gtk.css\");\n@define-color sub_color #445566;\n");
+
+        let defines = parse_gtk_defines(&main_css);
+
+        assert_eq!(defines.get("main_color").map(|s| s.as_str()), Some("#112233"));
+        assert_eq!(defines.get("sub_color").map(|s| s.as_str()), Some("#445566"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn live_system_theme_resolves_without_panics() {
+        let theme = get_system_theme();
+        eprintln!(
+            "Effective theme source: {:?}, window: {:?}",
+            theme.source,
+            theme.palette.as_ref().and_then(|p| p.window.as_deref())
+        );
+        let pal = theme.palette.expect("expected palette to be present");
+        assert!(pal.window.is_some() || pal.base.is_some());
     }
 }

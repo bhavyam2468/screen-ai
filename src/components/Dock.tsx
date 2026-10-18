@@ -302,10 +302,33 @@ export default function Dock(p: Props) {
     };
   }, [p.snipping, p.sessionRevision]);
 
-  // The overlay is summoned focused; when a panel closes, return focus to the one input.
+  // Track window focus state for styling the dock border when active
+  const [windowFocused, setWindowFocused] = useState(true);
   useEffect(() => {
-    if (p.panel !== "settings" && !p.snipping) inputRef.current?.focus();
-  }, [p.panel, p.snipping]);
+    const handleFocus = () => setWindowFocused(true);
+    const handleBlur = () => setWindowFocused(false);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, []);
+
+  // The overlay is summoned focused; ensure focus whenever summoned or when a panel closes.
+  useEffect(() => {
+    if (p.panel !== "settings" && !p.snipping) {
+      inputRef.current?.focus();
+      const raf = requestAnimationFrame(() => inputRef.current?.focus());
+      const t1 = setTimeout(() => inputRef.current?.focus(), 40);
+      const t2 = setTimeout(() => inputRef.current?.focus(), 120);
+      return () => {
+        cancelAnimationFrame(raf);
+        clearTimeout(t1);
+        clearTimeout(t2);
+      };
+    }
+  }, [p.sessionRevision, p.panel, p.snipping]);
 
   useEffect(() => {
     if (!p.preview || p.snipping) setPreviewOpen(false);
@@ -483,7 +506,13 @@ export default function Dock(p: Props) {
           width: showCommandPalette ? "min(760px, calc(100vw - 24px))" : "min(540px, calc(100vw - 24px))",
           visibility: p.snipping ? "hidden" : "visible",
         }}
-        className="dock-card pointer-events-auto relative z-10 max-w-[calc(100vw-24px)] overflow-hidden rounded-[var(--radius-card)] border border-white/15 shadow-[0_24px_80px_-28px_rgba(4,10,20,0.72)]"
+        data-focused={windowFocused && !p.snipping ? "true" : "false"}
+        onClick={(e) => {
+          if (e.target === e.currentTarget && p.panel !== "settings") {
+            inputRef.current?.focus();
+          }
+        }}
+        className="dock-card pointer-events-auto relative z-10 max-w-[calc(100vw-24px)] overflow-hidden rounded-[var(--radius-card)]"
       >
         <AnimatePresence initial={false}>
           {open && (

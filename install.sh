@@ -463,6 +463,19 @@ EOF
   ok "uninstaller installed → $BIN_DIR/screen-ai-uninstall"
 }
 
+setup_theming_templates() {
+  local theming_script=""
+  if [ -n "$SOURCE_DIR" ] && [ -f "$SOURCE_DIR/theming/setup-theming.sh" ]; then
+    theming_script="$SOURCE_DIR/theming/setup-theming.sh"
+  elif [ -f "${0%/*}/theming/setup-theming.sh" ]; then
+    theming_script="${0%/*}/theming/setup-theming.sh"
+  fi
+
+  if [ -n "$theming_script" ]; then
+    bash "$theming_script" >>"$LOG" 2>&1 && ok "registered dynamic theming templates (Matugen / DMS)" || warn "could not register theming templates"
+  fi
+}
+
 # ── provider setup (BYOK) ────────────────────────────────────────────────────
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
@@ -1636,6 +1649,7 @@ main() {
   mkdir -p "$SHARE_DIR"
   desktop_entry
   install_icon
+  setup_theming_templates
 
   if [ "$NO_SETUP" -eq 0 ]; then
     step "Setup"
