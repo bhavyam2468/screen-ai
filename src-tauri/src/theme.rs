@@ -522,7 +522,7 @@ pub fn appearance_overrides() -> AppearanceOverrides {
         theme: text("theme").map(|theme| match theme.as_str() {
             "matugen" | "qt/matugen" | "desktop" => "qt".to_string(),
             "system" => "auto".to_string(),
-            other => other,
+            _ => theme,
         }),
         position: text("position"),
         opacity: text("opacity").and_then(|value| {
@@ -1824,3 +1824,5 @@ mod tests {
         );
         assert_eq!(patched, "[palette]\nsource = auto\n\n[appearance]\ntheme = dark\n");
     }
+}
+

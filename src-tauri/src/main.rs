@@ -263,7 +263,11 @@ fn capture_screen(full: &PathBuf) -> Result<(), String> {
 
     if is_wayland {
         let s = full.to_string_lossy().to_string();
-        for args in [["-t", "jpeg", "-q", "92", s.as_str()], ["-t", "png", s.as_str()]] {
+        let attempts: [&[&str]; 2] = [
+            &["-t", "jpeg", "-q", "92", s.as_str()],
+            &["-t", "png", s.as_str()],
+        ];
+        for args in attempts {
             if let Ok(status) = std::process::Command::new("grim").args(args).status() {
                 if status.success() && full.exists() {
                     return Ok(());
