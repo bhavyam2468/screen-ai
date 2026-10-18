@@ -195,6 +195,12 @@ body {
   text-underline-offset: 2px;
 }
 
+/* A compositor urgent color (theme.conf, or niri's focus-ring urgent-color)
+   overrides the built-in rose, which already adapts to light and dark. */
+.chat-error {
+  color: var(--error);
+}
+
 .md-link {
   color: var(--link);
   font-weight: 500;
@@ -228,6 +234,7 @@ body {
   --skel-hi: rgba(169, 190, 220, 0.18);
   --focus-ring: rgba(130, 173, 255, 0.7);
   --focus-glow: rgba(71, 123, 211, 0.18);
+  --error: rgba(253, 164, 175, 0.9);
   --window-rgb: 21, 31, 45;
   --accent-rgb: 130, 173, 255;
   --accent-text: #101725;
@@ -253,6 +260,7 @@ body {
   --skel-hi: rgba(49, 72, 107, 0.14);
   --focus-ring: rgba(57, 115, 209, 0.62);
   --focus-glow: rgba(57, 115, 209, 0.12);
+  --error: rgba(225, 29, 72, 0.92);
   --window-rgb: 250, 252, 255;
   --accent-rgb: 57, 115, 209;
   --accent-text: #ffffff;
@@ -271,15 +279,19 @@ body {
   border-style: solid;
   border-color: var(--inactive-border, rgba(169, 190, 220, 0.18));
   box-shadow: var(--card-shadow, 0 24px 80px -28px rgba(4, 10, 20, 0.72));
-  transition: border-color 0.22s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: border-color calc(0.22s * var(--motion-scale, 1)) cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow calc(0.22s * var(--motion-scale, 1)) cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.dock-card:focus-within,
+/* data-focused means "the overlay is holding the keyboard", which is the one
+   thing worth showing: the border takes the accent color, like a compositor
+   tinting a focused window border. Deliberately not :focus-within — the input
+   keeps DOM focus even after the keyboard moves to another window, so that
+   selector left the ring on permanently. */
 .dock-card[data-focused="true"] {
-  border-color: var(--active-border, var(--focus-ring, var(--accent, #94cdf7))) !important;
-  box-shadow: 0 0 0 1.5px var(--active-border, var(--focus-ring, var(--accent, #94cdf7))),
-              0 0 28px -2px var(--focus-glow, rgba(148, 205, 247, 0.35)),
-              var(--card-shadow, 0 24px 80px -28px rgba(4, 10, 20, 0.72)) !important;
+  border-color: var(--active-border, var(--accent, #94cdf7));
+  box-shadow: var(--card-shadow, 0 24px 80px -28px rgba(4, 10, 20, 0.72)),
+              0 0 16px -10px var(--focus-glow, rgba(148, 205, 247, 0.35));
 }
 
 /* ══════════════ dark-theme surface and border remaps ══════════════ */
@@ -341,7 +353,6 @@ body {
 [data-theme="light"] [class~="placeholder:text-white/30"]::placeholder { color: rgba(24, 35, 55, 0.34); }
 [data-theme="light"] [class~="placeholder:text-white/25"]::placeholder { color: rgba(24, 35, 55, 0.3); }
 [data-theme="light"] [class~="text-rose-400"] { color: #e11d48; }
-[data-theme="light"] [class~="text-rose-300/90"] { color: rgba(225, 29, 72, 0.92); }
 [data-theme="light"] [class~="border-rose-500/20"] { border-color: rgba(225, 29, 72, 0.3); }
 [data-theme="light"] [class~="bg-rose-500/10"] { background-color: rgba(225, 29, 72, 0.08); }
 [data-theme="light"] [class~="bg-rose-400"] { background-color: #e11d48; }
@@ -516,7 +527,7 @@ body {
   user-select: text;
   -webkit-user-select: text;
   caret-color: var(--accent);
-  transition: height 0.12s ease-out;
+  transition: height calc(0.12s * var(--motion-scale, 1)) ease-out;
 }
 .dock-textarea::placeholder {
   color: var(--fg-mute);
@@ -538,7 +549,7 @@ body {
   color: white;
   background: rgba(9, 15, 24, 0.58);
   opacity: 0;
-  transition: opacity 0.16s ease;
+  transition: opacity calc(0.16s * var(--motion-scale, 1)) ease;
 }
 .shot-button:hover .shot-hover,
 .shot-button:focus-visible .shot-hover {
@@ -568,8 +579,8 @@ body {
   border-radius: var(--radius-inner);
   color: var(--fg-dim);
   text-align: left;
-  transition: background-color 0.13s ease, color 0.13s ease;
-  animation: omnibox-row-in 0.15s ease both;
+  transition: background-color calc(0.13s * var(--motion-scale, 1)) ease, color calc(0.13s * var(--motion-scale, 1)) ease;
+  animation: omnibox-row-in calc(0.15s * var(--motion-scale, 1)) ease both;
 }
 .omnibox-row:nth-child(2) { animation-delay: 12ms; }
 .omnibox-row:nth-child(3) { animation-delay: 24ms; }
@@ -700,7 +711,7 @@ body {
   place-items: center;
   border-radius: 7px;
   color: var(--fg-mute);
-  transition: color 0.14s ease, background-color 0.14s ease;
+  transition: color calc(0.14s * var(--motion-scale, 1)) ease, background-color calc(0.14s * var(--motion-scale, 1)) ease;
 }
 .snip-hud > button:hover {
   background: rgba(var(--accent-rgb), 0.12);

@@ -3,6 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { X, Copy, Check, RotateCcw, ArrowDown } from "lucide-react";
+import { useSeconds } from "../lib/motion";
 
 export interface Msg {
   role: "user" | "assistant";
@@ -116,12 +117,13 @@ function MsgIn({
   reduced: boolean;
   children: React.ReactNode;
 }) {
+  const seconds = useSeconds();
   return (
     <motion.div
       className={className}
       initial={reduced ? false : { opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={reduced ? { duration: 0 } : { duration: 0.16, ease: "easeOut" }}
+      transition={reduced ? { duration: 0 } : { duration: seconds(0.16), ease: "easeOut" }}
     >
       {children}
     </motion.div>
@@ -135,6 +137,7 @@ export default function ChatPanel({ messages, streaming, error, onClose, onRetry
   const [canUp, setCanUp] = useState(false);
   const [canDown, setCanDown] = useState(false);
   const reduced = useReducedMotion() ?? false;
+  const seconds = useSeconds();
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -215,7 +218,7 @@ export default function ChatPanel({ messages, streaming, error, onClose, onRetry
           if (!m.text) {
             if (isLast && error) {
               return (
-                <p key={i} className="text-[12.5px] text-rose-300/90 leading-relaxed select-text">
+                <p key={i} className="chat-error text-[12.5px] leading-relaxed select-text">
                   {error}
                 </p>
               );
@@ -234,7 +237,7 @@ export default function ChatPanel({ messages, streaming, error, onClose, onRetry
                 {tidyMarkdown(m.text)}
               </ReactMarkdown>
               {isLast && error && (
-                <p className="mt-2 text-[12.5px] text-rose-300/90 select-text">{error}</p>
+                <p className="chat-error mt-2 text-[12.5px] select-text">{error}</p>
               )}
             </MsgIn>
           );
@@ -247,7 +250,7 @@ export default function ChatPanel({ messages, streaming, error, onClose, onRetry
             initial={{ opacity: 0, y: 8, x: "-50%" }}
             animate={{ opacity: 1, y: 0, x: "-50%" }}
             exit={{ opacity: 0, y: 8, x: "-50%" }}
-            transition={{ duration: reduced ? 0 : 0.16, ease: "easeOut" }}
+            transition={{ duration: reduced ? 0 : seconds(0.16), ease: "easeOut" }}
             className="absolute bottom-2 left-1/2 w-7 h-7 rounded-full bg-neutral-800 border border-white/15 text-white/70 hover:text-white shadow-lg flex items-center justify-center"
           >
             <ArrowDown size={13} />

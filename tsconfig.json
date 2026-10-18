@@ -10,7 +10,8 @@
     "jsx": "react-jsx",
     "noEmit": true,
     "isolatedModules": true,
-    "noUnusedLocals": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "types": ["vite/client"]
   },
   "include": ["src"]

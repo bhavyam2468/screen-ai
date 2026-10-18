@@ -322,6 +322,37 @@ install_deps() {
 }
 
 # ── build from source on the installing machine ────────────────────────────────
+# A GUI launch (autostart, .desktop file, tray relaunch) inherits the session's
+# minimal PATH, which normally has no rustup/nvm/volta toolchain in it. The
+# in-app updater builds from exactly that environment, so probe the standard
+# install locations and put the tools a login shell would find back on PATH.
+ensure_toolchain_path() {
+  local dir node_dir="" added=""
+  # Version managers keep one directory per runtime; the newest sorts last.
+  for dir in "$HOME"/.nvm/versions/node/*/bin \
+             "$HOME"/.local/share/fnm/node-versions/*/installation/bin \
+             "$HOME"/.fnm/node-versions/*/installation/bin; do
+    [ -d "$dir" ] && node_dir="$dir"
+  done
+  for dir in "$node_dir" \
+             "${CARGO_HOME:-$HOME/.cargo}/bin" \
+             "$HOME/.local/bin" \
+             "$HOME/.volta/bin" \
+             "$HOME/.asdf/shims" \
+             "$HOME/.nix-profile/bin" \
+             /usr/local/bin /usr/local/sbin /opt/bin; do
+    [ -n "$dir" ] && [ -d "$dir" ] || continue
+    case ":$PATH:" in *":$dir:"*) continue ;; esac
+    added="$added${added:+:}$dir"
+  done
+  [ -n "$added" ] || return 0
+  export PATH="$added:$PATH"
+  have cargo && have node && have npm && return 0
+  # stderr only: --check prints the commit SHA on stdout and the app parses it.
+  warn "build tools are still missing from PATH — cargo, node and npm are needed to build an update" >&2
+  return 0
+}
+
 ensure_rust() {
   local minimum="1.78.0" version="" cargo_home="${CARGO_HOME:-$HOME/.cargo}" rustup_init="$CACHE_HOME/rustup-init.sh"
   if have rustc && have cargo; then
@@ -374,8 +405,8 @@ bin_ok() {
 build_from_source() {
   have git || { echo "git is required to fetch the application source" >&2; return 1; }
   ensure_rust || return 1
-  have npm || { echo "npm is required to build the application frontend" >&2; return 1; }
-  have node || { echo "Node.js 18 or newer is required" >&2; return 1; }
+  have npm || { echo "npm was not found on PATH ($PATH) — it is required to build the application frontend" >&2; return 1; }
+  have node || { echo "node was not found on PATH ($PATH) — Node.js 18 or newer is required" >&2; return 1; }
   local node_major
   node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
   [ "$node_major" -ge 18 ] || { echo "Node.js 18 or newer is required" >&2; return 1; }
@@ -1579,26 +1610,40 @@ prepare_source() {
     exit
   fi
   if [ "${SCREEN_AI_SOURCE_READY:-0}" = 1 ]; then return; fi
-  [ -z "$(git -C "$SOURCE_DIR" status --porcelain)" ] || {
-    echo "Checkout has local changes: $SOURCE_DIR. Commit or stash them before running setup." >&2; exit 1;
-  }
+  # The managed checkout exists only to build Screen AI, so it can be forced to
+  # exactly the revision being installed. A development clone is the user's own
+  # work: never discard it, only fast-forward one that has no local edits.
+  local managed=0
+  if [ "$SOURCE_DIR" = "$SHARE_DIR/source" ]; then managed=1; fi
+  if [ "$managed" -eq 0 ]; then
+    # --untracked-files=no: a stray note or log in the clone must not block an
+    # update, while real edits to tracked files still stop it.
+    [ -z "$(git -C "$SOURCE_DIR" status --porcelain --untracked-files=no)" ] || {
+      echo "Checkout has local changes: $SOURCE_DIR. Commit or stash them before running setup." >&2; exit 1;
+    }
+  fi
   case "$SOURCE_REF" in
     main)
-      branch="$(git -C "$SOURCE_DIR" symbolic-ref --quiet --short HEAD || true)"
-      if [ -n "$branch" ]; then
-        git -C "$SOURCE_DIR" pull --ff-only >&2 || exit 1
+      if [ "$managed" -eq 1 ]; then
+        git -C "$SOURCE_DIR" fetch --force origin main >&2 || exit 1
+        # Clear untracked files that the incoming commit would otherwise collide
+        # with. Ignored paths (target/, node_modules/) stay, so builds stay warm.
+        git -C "$SOURCE_DIR" clean -fdq >&2 || true
+        git -C "$SOURCE_DIR" checkout -f -B main FETCH_HEAD >&2 || exit 1
       else
-        [ "$SOURCE_DIR" = "$SHARE_DIR/source" ] || {
-          echo "Detached development checkout: check out a tracking branch before running setup" >&2; exit 1;
-        }
-        git -C "$SOURCE_DIR" fetch origin main >&2 || exit 1
-        git -C "$SOURCE_DIR" checkout -B main FETCH_HEAD >&2 || exit 1
+        branch="$(git -C "$SOURCE_DIR" symbolic-ref --quiet --short HEAD || true)"
+        if [ -n "$branch" ]; then
+          git -C "$SOURCE_DIR" pull --ff-only >&2 || exit 1
+        else
+          echo "Detached development checkout: check out a tracking branch before running setup" >&2; exit 1
+        fi
       fi ;;
     *)
       [[ "$SOURCE_REF" =~ ^[0-9a-fA-F]{40}$ ]] || { echo "Expected main or a full commit SHA" >&2; exit 2; }
-      [ "$SOURCE_DIR" = "$SHARE_DIR/source" ] || { echo "PR builds require the managed checkout, not a development clone" >&2; exit 1; }
-      git -C "$SOURCE_DIR" fetch origin "$SOURCE_REF" >&2 || exit 1
-      git -C "$SOURCE_DIR" checkout --detach FETCH_HEAD >&2 || exit 1 ;;
+      [ "$managed" -eq 1 ] || { echo "PR builds require the managed checkout, not a development clone" >&2; exit 1; }
+      git -C "$SOURCE_DIR" fetch --force origin "$SOURCE_REF" >&2 || exit 1
+      git -C "$SOURCE_DIR" clean -fdq >&2 || true
+      git -C "$SOURCE_DIR" checkout -f --detach FETCH_HEAD >&2 || exit 1 ;;
   esac
   export SCREEN_AI_SOURCE_DIR="$SOURCE_DIR" SCREEN_AI_SOURCE_READY=1
   exec bash "$SOURCE_DIR/setup.sh" "${ORIGINAL_ARGS[@]}"
@@ -1676,5 +1721,6 @@ main() {
   printf '    %suninstall%s  %sscreen-ai-uninstall%s\n\n' "$BOLD" "$RST" "$DIM" "$RST"
 }
 
+ensure_toolchain_path
 prepare_source
 main

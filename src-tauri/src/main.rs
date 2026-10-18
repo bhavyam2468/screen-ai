@@ -14,6 +14,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State, WebviewWindow};
 
+mod desktop;
 mod theme;
 
 // ─── Settings ────────────────────────────────────────────────────────────────
@@ -133,7 +134,6 @@ impl Default for Settings {
 
 pub struct AppState {
     pub client: reqwest::Client,
-    #[allow(dead_code)]
     pub last_prompt: Mutex<String>,
     pub current_thumb: Mutex<String>,
     pub current_background: Mutex<String>,
@@ -145,10 +145,16 @@ pub struct AppState {
     pub input_sequence: AtomicU64,
     pub overlay_revision: AtomicU64,
     pub screenshot_fallback: AtomicBool,
+    /// Whether the overlay may ask for an exclusive keyboard grab when summoned.
+    /// False means `SCREEN_AI_KEYBOARD=on-demand`: never grab, click to type.
+    pub keyboard_grab: AtomicBool,
+    /// True only while the overlay is actually holding that exclusive grab.
+    pub keyboard_held: AtomicBool,
     /// True while a background source update is running.
     pub updating: AtomicBool,
-    /// The most recent line printed by the running updater.
-    pub update_last: Mutex<String>,
+    /// Last successful update check, so the startup check and the settings panel
+    /// do not both shell out to the installer within the same minute.
+    pub update_check: tokio::sync::Mutex<Option<(std::time::Instant, UpdateStatus)>>,
 }
 
 fn config_path() -> PathBuf {
@@ -158,6 +164,9 @@ fn config_path() -> PathBuf {
 
 fn tmp_full() -> PathBuf {
     std::env::temp_dir().join("screen-ai-full.png")
+}
+fn tmp_crop() -> PathBuf {
+    std::env::temp_dir().join("screen-ai-crop.png")
 }
 fn tmp_send() -> PathBuf {
     std::env::temp_dir().join("screen-ai-send.jpg")
@@ -488,8 +497,14 @@ fn crop_screenshot(
     let right = right.min(image_width).max(left + 1);
     let bottom = bottom.min(image_height).max(top + 1);
     let cropped = image.crop_imm(left, top, right - left, bottom - top);
-    cropped.save(&full).map_err(|e| format!("Could not crop the screenshot: {e}"))?;
-    let shot = process_images(&full, &send)?;
+    // Write the crop beside the capture instead of over it. Snipping coordinates
+    // are always full-screen, so replacing `full` would make a second snip crop
+    // the first crop with the wrong scale.
+    let crop_path = tmp_crop();
+    cropped
+        .save(&crop_path)
+        .map_err(|e| format!("Could not crop the screenshot: {e}"))?;
+    let shot = process_images(&crop_path, &send)?;
     if let Some(state) = app.try_state::<AppState>() {
         if let Ok(mut current) = state.current_thumb.lock() {
             *current = shot.thumb.clone();
@@ -579,6 +594,18 @@ fn apply_region(g: &gtk::ApplicationWindow, rects: &[Rect]) {
     g.input_shape_combine_region(Some(&region));
 }
 
+/// Whether a summon may take an exclusive keyboard grab.
+///
+/// Exclusive is what makes `mod+shift+s` → type work, and `desktop::spawn_watcher`
+/// gives it back as soon as another window takes focus. Set
+/// `SCREEN_AI_KEYBOARD=on-demand` to never grab at all: the overlay then only
+/// receives keys after the card is clicked, on every compositor.
+fn wants_keyboard_grab() -> bool {
+    std::env::var("SCREEN_AI_KEYBOARD")
+        .map(|mode| !mode.eq_ignore_ascii_case("on-demand"))
+        .unwrap_or(true)
+}
+
 fn set_keyboard(app: &AppHandle, mode: &'static str, revision: u64) {
     if !is_layer(app) {
         return;
@@ -598,6 +625,28 @@ fn set_keyboard(app: &AppHandle, mode: &'static str, revision: u64) {
             _ => KeyboardMode::None,
         });
     });
+}
+
+/// Give the keyboard back to the desktop.
+///
+/// Called when the compositor reports that another window took focus (see
+/// `desktop.rs`) or when the webview itself is blurred. The overlay stays up and
+/// click-through; stepping down to `on-demand` means the window underneath now
+/// receives keys, and clicking the card takes them back.
+fn release_keyboard(app: &AppHandle) {
+    if !is_shown(app) || !is_layer(app) {
+        return;
+    }
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    // Only ever step down once: a second event must not disturb a hide that has
+    // already moved the surface to `none`.
+    if !state.keyboard_held.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    let revision = state.overlay_revision.load(Ordering::SeqCst);
+    set_keyboard(app, "ondemand", revision);
 }
 
 /// Make the (non-layer) fallback window cover the whole monitor.
@@ -708,8 +757,12 @@ fn show_overlay(app: &AppHandle) -> Option<u64> {
     });
 
     if is_layer(app) {
-        // Keep exclusive keyboard focus while the overlay is open so the user can immediately type.
-        set_keyboard(app, "exclusive", overlay_revision);
+        // Grab the keyboard so a hotkey summon is immediately typeable. The
+        // desktop focus watcher releases the grab the moment another window
+        // takes focus; hiding releases it too.
+        let grab = state.keyboard_grab.load(Ordering::Relaxed);
+        set_keyboard(app, if grab { "exclusive" } else { "ondemand" }, overlay_revision);
+        state.keyboard_held.store(grab, Ordering::SeqCst);
     } else if let Some(window) = app.get_webview_window("main") {
         show_fallback(&window);
     }
@@ -737,6 +790,7 @@ fn hide_overlay_now(app: &AppHandle) {
             }
         });
         set_keyboard(app, "none", overlay_revision);
+        state.keyboard_held.store(false, Ordering::SeqCst);
     } else if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
@@ -810,6 +864,7 @@ fn summon(app: &AppHandle, view: &str) {
     let full = tmp_full();
     let send = tmp_send();
     let _ = std::fs::remove_file(&full);
+    let _ = std::fs::remove_file(tmp_crop());
     let _ = std::fs::remove_file(&send);
 
     // Capture BEFORE showing so the overlay is never in the shot. On
@@ -1456,26 +1511,19 @@ fn app_version() -> String {
     format!("v1.{}{}", sha, if dirty { "+dirty" } else { "" })
 }
 
-fn truncate_update_log(text: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let start = lines.len().saturating_sub(24);
-    lines[start..].join("\n")
-}
-
-#[tauri::command]
-async fn check_for_updates() -> Result<UpdateStatus, String> {
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let updater = executable.parent().ok_or("Cannot locate setup wrapper")?.join("screen-ai-update");
+/// Asks the installed updater wrapper which commit `main` is on.
+async fn fetch_update_status() -> Result<UpdateStatus, String> {
+    let updater = installed_updater()?;
     let output = tokio::process::Command::new("bash")
-        .arg(updater).arg("--check").output().await
-        .map_err(|e| format!("Could not run setup to check for updates: {e}"))?;
+        .arg(&updater).arg("--check").output().await
+        .map_err(|e| format!("Could not run the update check: {e}"))?;
     if !output.status.success() {
-        return Err(format!("Update check failed: {}", String::from_utf8_lossy(&output.stderr)));
+        return Err(format!("Update check failed: {}", last_lines(&String::from_utf8_lossy(&output.stderr), 4)));
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let mut lines = text.lines();
     let latest_sha = lines.next().filter(|sha| sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()))
-        .ok_or("Setup did not return a valid commit SHA")?.to_string();
+        .ok_or("The updater did not report a commit SHA for main")?.to_string();
     let latest_message = lines.next().unwrap_or("Latest source revision").to_string();
     let current_sha = env!("SCREEN_AI_COMMIT").to_string();
     let update_available = env!("SCREEN_AI_DIRTY") == "1"
@@ -1491,8 +1539,83 @@ async fn check_for_updates() -> Result<UpdateStatus, String> {
     })
 }
 
-/// Reads the updater's output line by line: each line is forwarded to the UI as
-/// `update-progress` and kept as the latest status for `get_update_status`.
+/// Reports the latest revision on `main`, one check at a time and at most once
+/// per 30 s. The app checks on launch and the settings panel checks again when it
+/// opens; the installer's lock rejects two concurrent runs, so without this the
+/// second call surfaced "Another Screen AI setup/check is running" as an error.
+#[tauri::command]
+async fn check_for_updates(state: State<'_, AppState>) -> Result<UpdateStatus, String> {
+    let mut cached = state.update_check.lock().await;
+    if let Some((checked_at, status)) = cached.as_ref() {
+        if checked_at.elapsed() < Duration::from_secs(30) {
+            return Ok(status.clone());
+        }
+    }
+    let status = fetch_update_status().await?;
+    *cached = Some((std::time::Instant::now(), status.clone()));
+    Ok(status)
+}
+
+/// Path of the updater wrapper the installer wrote next to the binary.
+fn installed_updater() -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let updater = executable
+        .parent()
+        .map(|bin_dir| bin_dir.join("screen-ai-update"))
+        .ok_or_else(|| "Cannot locate the installed Screen AI updater".to_string())?;
+    if !updater.is_file() {
+        return Err("The local source updater is missing. Re-run the Linux installer to install it.".into());
+    }
+    Ok(updater)
+}
+
+/// Installer output is a coloured, multi-line script log. Only its tail explains
+/// a failure, so keep the last `count` lines and drop the ANSI escapes.
+fn last_lines(text: &str, count: usize) -> String {
+    let lines: Vec<String> = text
+        .lines()
+        .map(strip_ansi)
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(count);
+    lines[start..].join(" · ")
+}
+
+/// Removes CSI sequences (`\x1b[…m` and friends) so progress lines render as
+/// plain text in the overlay instead of showing escape codes.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.peek() {
+            Some('[') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if next == '\u{7}' {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Reads the updater's output line by line and forwards each line to the UI as
+/// `update-progress`. The last few lines are kept to explain a failure.
 async fn pump_update_lines<R>(reader: R, app: AppHandle, tail: Arc<Mutex<VecDeque<String>>>)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -1500,19 +1623,14 @@ where
     use tokio::io::AsyncBufReadExt;
     let mut lines = tokio::io::BufReader::new(reader).lines();
     while let Ok(Some(raw)) = lines.next_line().await {
-        let line = raw.trim().to_string();
+        let line = strip_ansi(raw.trim());
         if line.is_empty() {
             continue;
         }
         if let Ok(mut recent) = tail.lock() {
             recent.push_back(line.clone());
-            while recent.len() > 24 {
+            while recent.len() > 8 {
                 recent.pop_front();
-            }
-        }
-        if let Some(state) = app.try_state::<AppState>() {
-            if let Ok(mut last) = state.update_last.lock() {
-                *last = line.clone();
             }
         }
         let _ = app.emit("update-progress", line);
@@ -1524,13 +1642,7 @@ where
 async fn run_source_update(app: &AppHandle, source_ref: &str, label: &str) -> Result<String, String> {
     let install_path = std::env::current_exe()
         .map_err(|e| format!("Cannot locate the installed Screen AI executable: {e}"))?;
-    let updater = install_path
-        .parent()
-        .map(|bin_dir| bin_dir.join("screen-ai-update"))
-        .ok_or_else(|| "Cannot locate the installed Screen AI updater".to_string())?;
-    if !updater.is_file() {
-        return Err("The local source updater is missing. Re-run the Linux installer to install it.".into());
-    }
+    let updater = installed_updater()?;
 
     let mut child = tokio::process::Command::new("bash")
         .arg(&updater)
@@ -1561,11 +1673,11 @@ async fn run_source_update(app: &AppHandle, source_ref: &str, label: &str) -> Re
 
     if !status.success() {
         let lines: Vec<String> = tail.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default();
-        let tail = truncate_update_log(&lines.join("\n"));
-        return Err(if tail.trim().is_empty() {
+        let reason = last_lines(&lines.join("\n"), 4);
+        return Err(if reason.trim().is_empty() {
             format!("Source update failed with {status}")
         } else {
-            format!("Source update failed: {tail}")
+            format!("Source update failed: {reason}")
         });
     }
     Ok(format!("Built {label} from GitHub source and installed at {}", install_path.display()))
@@ -1579,9 +1691,6 @@ fn begin_update(app: &AppHandle, source_ref: String, label: String) -> Result<St
         .ok_or_else(|| "Screen AI is still starting; try again in a moment.".to_string())?;
     if state.updating.swap(true, Ordering::SeqCst) {
         return Err("An update is already running.".into());
-    }
-    if let Ok(mut last) = state.update_last.lock() {
-        last.clear();
     }
 
     let owner = app.clone();
@@ -1602,14 +1711,6 @@ fn begin_update(app: &AppHandle, source_ref: String, label: String) -> Result<St
 #[tauri::command]
 fn update_from_source(app: AppHandle) -> Result<String, String> {
     begin_update(&app, "main".into(), "latest main".into())
-}
-
-#[tauri::command]
-fn get_update_status(state: State<'_, AppState>) -> serde_json::Value {
-    serde_json::json!({
-        "running": state.updating.load(Ordering::SeqCst),
-        "last_line": state.update_last.lock().map(|line| line.clone()).unwrap_or_default(),
-    })
 }
 
 #[tauri::command]
@@ -1815,8 +1916,10 @@ fn main() {
             input_sequence: AtomicU64::new(0),
             overlay_revision: AtomicU64::new(0),
             screenshot_fallback: AtomicBool::new(screenshot_fallback),
+            keyboard_grab: AtomicBool::new(wants_keyboard_grab()),
+            keyboard_held: AtomicBool::new(false),
             updating: AtomicBool::new(false),
-            update_last: Mutex::new(String::new()),
+            update_check: tokio::sync::Mutex::new(None),
         })
         .setup(|app| {
             init_layer_shell(app.handle());
@@ -1827,6 +1930,24 @@ fn main() {
             theme::spawn_watcher(move |next| {
                 let _ = theme_owner.emit("theme-changed", next);
             });
+            // Hand the keyboard back to whatever the user focuses while the
+            // overlay is open. An exclusive layer-shell grab is sticky: without
+            // this the overlay keeps eating keys meant for the window behind it.
+            let focus_owner = app.handle().clone();
+            if let Some(desktop) = desktop::spawn_watcher(move || release_keyboard(&focus_owner)) {
+                eprintln!("screen-ai: releasing the keyboard on {desktop:?} focus changes");
+            }
+            // Compositors that do deliver a real keyboard leave (niri's
+            // screenshot UI, the lock screen, another exclusive layer) release
+            // the grab here.
+            if let Some(window) = app.get_webview_window("main") {
+                let blur_owner = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(false) = event {
+                        release_keyboard(&blur_owner);
+                    }
+                });
+            }
             // Tray: click toggles, menu for settings/quit.
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -1919,7 +2040,6 @@ fn main() {
             check_for_updates,
             update_from_source,
             update_from_pr,
-            get_update_status,
             restart_app,
             get_system_theme,
             open_theme_config

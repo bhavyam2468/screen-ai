@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { listen } from "@tauri-apps/api/event";
 import Dock, { Panel } from "./components/Dock";
+import { MotionScaleProvider } from "./lib/motion";
 import type { Msg } from "./components/ChatPanel";
 import {
   DEFAULT_SETTINGS,
@@ -20,6 +21,7 @@ import {
   getSystemTheme,
   fallbackSystemTheme,
   openThemeConfig,
+  restartApp,
   updateFromSource,
   UpdateEvent,
   normalizeSettings,
@@ -165,9 +167,21 @@ export default function App() {
       unsubs.push(await listen<SystemTheme>("theme-changed", (e) => setSysTheme(e.payload)));
       unsubs.push(await listen<string>("update-progress", (e) => setCommandNotice(e.payload)));
       unsubs.push(
-        await listen<UpdateEvent>("update-done", (e) =>
-          setCommandNotice(e.payload.ok ? "Update installed. Restart Screen AI to use it." : e.payload.message)
-        )
+        await listen<UpdateEvent>("update-done", (e) => {
+          if (!e.payload.ok) {
+            setCommandNotice(e.payload.message);
+            return;
+          }
+          // The build replaced the binary on disk, but this process is still the
+          // old one. Restart into the new build instead of leaving "Update"
+          // looking like it did nothing.
+          setCommandNotice("Update installed — restarting Screen AI…");
+          window.setTimeout(() => {
+            void restartApp().catch(() =>
+              setCommandNotice("Update installed. Quit and relaunch Screen AI to use it.")
+            );
+          }, 1200);
+        })
       );
       unsubs.push(await listen<{
         thumb: string;
@@ -541,8 +555,9 @@ export default function App() {
     root.style.setProperty("--focus-glow", rgba(accent, 0.2));
     root.style.setProperty("--active-border", activeBorder);
     root.style.setProperty("--inactive-border", inactiveBorder);
-    if (t.urgent_color) root.style.setProperty("--urgent-color", t.urgent_color);
-    else root.style.removeProperty("--urgent-color");
+    // The desktop's own "needs attention" hue, used for request errors.
+    if (t.urgent_color) root.style.setProperty("--error", t.urgent_color);
+    else root.style.removeProperty("--error");
 
     if (hasQtPalette) {
       root.style.setProperty("--qt-window", windowColor);
@@ -584,52 +599,54 @@ export default function App() {
   };
 
   return (
-    <div
-      className={`fixed inset-0 flex flex-col justify-end pointer-events-none ${align}`}
-      style={{
-        ...paddingStyle,
-        ...(desktopBackground ? {
-          backgroundImage: `url(${desktopBackground})`,
-          backgroundPosition: "center",
-          backgroundRepeat: "no-repeat",
-          backgroundSize: "cover",
-        } : {}),
-      }}
-    >
-      <AnimatePresence onExitComplete={() => {
-        void overlayHidden().catch(() => {}).finally(() => setDesktopBackground(null));
-      }}>
-        {visible && (
-          <Dock
-            key="dock"
-            sessionRevision={sessionRevision}
-            panel={panel}
-            settingsSection={settingsSection}
-            messages={messages}
-            streaming={streaming}
-            error={error}
-            notice={commandNotice}
-            thumb={thumb}
-            preview={preview}
-            modelQuery={modelQuery}
-            snipping={snipping}
-            settings={settings}
-            hasUpdate={hasUpdate}
-            onSubmit={(prompt) => {
-              if (prompt.trimStart().startsWith("/")) void runSlashCommand(prompt);
-              else void submit(prompt);
-            }}
-            onSettingsSectionChange={setSettingsSection}
-            onToggleSettings={() => (panel === "settings" ? setPanel(afterSettings()) : openSettings("model"))}
-            onSaveSettings={save}
-            onStartSnip={() => setSnipping(true)}
-            onCancelSnip={() => setSnipping(false)}
-            onSelectSnip={cropSelection}
-            onRetry={retry}
-            onDismiss={dismiss}
-          />
-        )}
-      </AnimatePresence>
-    </div>
+    <MotionScaleProvider scale={sysTheme.tokens.speed}>
+      <div
+        className={`fixed inset-0 flex flex-col justify-end pointer-events-none ${align}`}
+        style={{
+          ...paddingStyle,
+          ...(desktopBackground ? {
+            backgroundImage: `url(${desktopBackground})`,
+            backgroundPosition: "center",
+            backgroundRepeat: "no-repeat",
+            backgroundSize: "cover",
+          } : {}),
+        }}
+      >
+        <AnimatePresence onExitComplete={() => {
+          void overlayHidden().catch(() => {}).finally(() => setDesktopBackground(null));
+        }}>
+          {visible && (
+            <Dock
+              key="dock"
+              sessionRevision={sessionRevision}
+              panel={panel}
+              settingsSection={settingsSection}
+              messages={messages}
+              streaming={streaming}
+              error={error}
+              notice={commandNotice}
+              thumb={thumb}
+              preview={preview}
+              modelQuery={modelQuery}
+              snipping={snipping}
+              settings={settings}
+              hasUpdate={hasUpdate}
+              onSubmit={(prompt) => {
+                if (prompt.trimStart().startsWith("/")) void runSlashCommand(prompt);
+                else void submit(prompt);
+              }}
+              onSettingsSectionChange={setSettingsSection}
+              onToggleSettings={() => (panel === "settings" ? setPanel(afterSettings()) : openSettings("model"))}
+              onSaveSettings={save}
+              onStartSnip={() => setSnipping(true)}
+              onCancelSnip={() => setSnipping(false)}
+              onSelectSnip={cropSelection}
+              onRetry={retry}
+              onDismiss={dismiss}
+            />
+          )}
+        </AnimatePresence>
+      </div>
+    </MotionScaleProvider>
   );
 }
