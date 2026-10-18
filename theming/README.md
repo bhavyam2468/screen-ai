@@ -2,7 +2,8 @@
 
 Screen AI reads one file: `~/.config/screen-ai/theme.conf`. It is created on
 first launch from `theme.conf` in this folder, and then it is yours to edit.
-Changes apply live. The overlay watches the file and the palette sources.
+Changes apply live — the overlay polls this file and the palette sources about
+twice a second, so an edit lands while the card is still on screen.
 
 ## Priority
 
@@ -26,7 +27,7 @@ matugen image /path/to/wallpaper.jpg
 ```
 
 Matugen then writes `~/.config/screen-ai/colors.conf` on every run, and the
-overlay picks up the new colors within about 1.5 seconds.
+overlay picks up the new colors within about half a second.
 
 To point at another palette file, set `source_file` in `[palette]`.
 
@@ -48,6 +49,28 @@ back to a built-in default:
 - `gap`: screen-edge margin in px (0 to 120). Niri: `layout { gaps }`.
 - `shadow`: any CSS `box-shadow`. Niri's `layout { shadow }` is translated,
   keeping its alpha (`#rrggbbaa`).
+
+`[appearance]` — the whole card, including everything Settings → Appearance can
+set. A key written here wins over the saved setting; the panel rewrites the file
+on save so the two never disagree.
+
+- `theme`: `auto`, `dark`, `light`, or `qt` (the desktop Qt/Matugen colors).
+- `position`: `bottom-left`, `bottom-center`, `bottom-right`.
+- `opacity`: 10 to 100 (%). Multiplied into *every* surface the card paints —
+  plate, command palette, chat bubbles, code blocks, settings fields — so the
+  card fades as one object. Foreground colors keep their own contrast.
+- `blur`: 0 to 64 px. A blurred copy of the capture is used as the card's plate,
+  because an overlay window cannot sample the desktop behind it. Needs
+  `opacity < 100` to be visible.
+- `noise`: 0 to 100 (%). Film grain over the finished card, text included.
+- `shadow_intensity` (0 to 200 %), `shadow_blur`, `shadow_offset`,
+  `shadow_spread`, `shadow_color`: the drop shadow, as parts. `shadow_intensity
+  = 0` removes it; setting any part stops the shadow from being borrowed from
+  Niri. `[shape] shadow` still overrides all of them with one CSS string.
+
+`[input] keyboard` — `auto` (grab on summon, release on focus change),
+`on-demand` (never grab), or `sticky` (never release until dismissed).
+`$SCREEN_AI_KEYBOARD` wins over it.
 
 `[type]` — `font`, `mono`, `size` (8 to 32): UI font, monospace font, base size.
 

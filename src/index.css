@@ -223,7 +223,6 @@ body {
   --border-soft: rgba(169, 190, 220, 0.14);
   --border-strong: rgba(169, 190, 220, 0.34);
   --code-bg: rgba(113, 145, 188, 0.12);
-  --pre-bg: #131c29;
   --scroll: rgba(171, 191, 220, 0.18);
   --scroll-hi: rgba(171, 191, 220, 0.3);
   --link: #91baff;
@@ -238,6 +237,19 @@ body {
   --window-rgb: 21, 31, 45;
   --accent-rgb: 130, 173, 255;
   --accent-text: #101725;
+  /* Every surface the card paints, as channel triplets, so one multiplier —
+     `--surface-alpha` from Settings → Opacity — thins the whole card out at
+     once instead of leaving bubbles, fields and palettes solid. */
+  --surface-card-rgb: var(--window-rgb);
+  --surface-sunken-rgb: 17, 25, 37;
+  --surface-base-rgb: 23, 34, 49;
+  --surface-raised-rgb: 32, 45, 61;
+  --surface-raised-hi-rgb: 43, 59, 79;
+  --surface-hover-window-rgb: 27, 41, 57;
+  --surface-hover-base-rgb: 42, 58, 79;
+  --surface-hover-raised-rgb: 52, 70, 94;
+  --surface-code-rgb: 19, 28, 41;
+  --pre-bg: rgba(var(--surface-code-rgb), calc(0.94 * var(--surface-alpha, 1)));
 }
 
 [data-theme="light"] {
@@ -249,7 +261,6 @@ body {
   --border-soft: rgba(49, 72, 107, 0.13);
   --border-strong: rgba(49, 72, 107, 0.32);
   --code-bg: rgba(49, 72, 107, 0.07);
-  --pre-bg: #edf2f8;
   --scroll: rgba(49, 72, 107, 0.2);
   --scroll-hi: rgba(49, 72, 107, 0.35);
   --link: #285db5;
@@ -264,7 +275,29 @@ body {
   --window-rgb: 250, 252, 255;
   --accent-rgb: 57, 115, 209;
   --accent-text: #ffffff;
+  --surface-card-rgb: var(--window-rgb);
+  --surface-sunken-rgb: 228, 234, 243;
+  --surface-base-rgb: 237, 242, 248;
+  --surface-raised-rgb: 233, 238, 246;
+  --surface-raised-hi-rgb: 213, 223, 236;
+  --surface-hover-window-rgb: 230, 237, 246;
+  --surface-hover-base-rgb: 220, 229, 241;
+  --surface-hover-raised-rgb: 203, 216, 232;
+  --surface-code-rgb: 237, 242, 248;
+  --pre-bg: rgba(var(--surface-code-rgb), calc(0.94 * var(--surface-alpha, 1)));
 }
+
+/* ══════════════ card surfaces ══════════════
+   One rule per surface, for every palette: the theme blocks above (and the Qt
+   bridge, which writes the same `--surface-*-rgb` variables inline) only supply
+   colors. `:root` in front keeps specificity above the generated utilities. */
+:root [class~="bg-neutral-950"] { background-color: rgba(var(--surface-sunken-rgb, var(--window-rgb)), var(--surface-alpha, 1)); }
+:root [class~="bg-neutral-900"] { background-color: rgba(var(--surface-base-rgb, var(--window-rgb)), var(--surface-alpha, 1)); }
+:root [class~="bg-neutral-800"] { background-color: rgba(var(--surface-raised-rgb, var(--window-rgb)), var(--surface-alpha, 1)); }
+:root [class~="bg-neutral-700"] { background-color: rgba(var(--surface-raised-hi-rgb, var(--window-rgb)), var(--surface-alpha, 1)); }
+:root [class~="hover:bg-neutral-900"]:hover { background-color: rgba(var(--surface-hover-window-rgb, var(--window-rgb)), var(--surface-alpha, 1)); }
+:root [class~="hover:bg-neutral-800"]:hover { background-color: rgba(var(--surface-hover-base-rgb, var(--window-rgb)), var(--surface-alpha, 1)); }
+:root [class~="hover:bg-neutral-700"]:hover { background-color: rgba(var(--surface-hover-raised-rgb, var(--window-rgb)), var(--surface-alpha, 1)); }
 
 ::selection {
   background: var(--accent);
@@ -278,9 +311,59 @@ body {
   border-width: var(--border-width, 2px);
   border-style: solid;
   border-color: var(--inactive-border, rgba(169, 190, 220, 0.18));
+  background-color: rgba(var(--surface-card-rgb, var(--window-rgb)), var(--surface-alpha, 1));
   box-shadow: var(--card-shadow, 0 24px 80px -28px rgba(4, 10, 20, 0.72));
   transition: border-color calc(0.22s * var(--motion-scale, 1)) cubic-bezier(0.16, 1, 0.3, 1),
               box-shadow calc(0.22s * var(--motion-scale, 1)) cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* [appearance] blur: what shows through the translucent card is a blurred copy
+   of the capture taken for it — the desktop itself is never inside this window,
+   so `backdrop-filter` would have nothing to sample. The plate is the size of
+   the screen, translated to sit exactly on it, and the card's own
+   overflow+radius clip it. `repeat` (not `no-repeat`) so the blur always has
+   pixels to sample at the screen edges instead of fading to transparent. */
+.dock-frost {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -2;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  background-repeat: repeat;
+  background-position: 0 0;
+  background-size: 100% 100%;
+  filter: blur(var(--card-blur, 0px)) saturate(1.06);
+  will-change: transform;
+}
+
+/* The card's own tint rides above the frost, which is what makes the frosted
+   plate read as glass rather than as a stretched screenshot. */
+.dock-tint {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-color: rgba(var(--surface-card-rgb, var(--window-rgb)), var(--surface-alpha, 1));
+}
+
+.dock-card[data-frost="on"] {
+  background-color: transparent;
+}
+
+/* [appearance] noise: film grain over the finished card, so it lands on the
+   bubbles and panels too instead of only on the plate underneath them. */
+.dock-grain {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  opacity: var(--card-noise, 0);
+  mix-blend-mode: overlay;
+  background-size: 140px 140px;
+  background-repeat: repeat;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.86' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 /* data-focused means "the overlay is holding the keyboard", which is the one
@@ -295,13 +378,6 @@ body {
 }
 
 /* ══════════════ dark-theme surface and border remaps ══════════════ */
-[data-theme="dark"] [class~="bg-neutral-950"] { background-color: #111925; }
-[data-theme="dark"] [class~="bg-neutral-900"] { background-color: #172231; }
-[data-theme="dark"] [class~="bg-neutral-800"] { background-color: #202d3d; }
-[data-theme="dark"] [class~="bg-neutral-700"] { background-color: #2b3b4f; }
-[data-theme="dark"] [class~="hover:bg-neutral-900"]:hover { background-color: #1b2939; }
-[data-theme="dark"] [class~="hover:bg-neutral-800"]:hover { background-color: #2a3a4f; }
-[data-theme="dark"] [class~="hover:bg-neutral-700"]:hover { background-color: #34465e; }
 [data-theme="dark"] [class~="border-white/15"] { border-color: rgba(169, 190, 220, 0.18); }
 [data-theme="dark"] [class~="border-white/10"] { border-color: rgba(169, 190, 220, 0.13); }
 [data-theme="dark"] [class~="border-white/30"] { border-color: rgba(169, 190, 220, 0.3); }
@@ -335,13 +411,6 @@ body {
 [data-theme="light"] [class~="bg-white"] { background-color: #182337; }
 [data-theme="light"] [class~="bg-white/10"] { background-color: rgba(24, 35, 55, 0.07); }
 [data-theme="light"] [class~="bg-white/5"] { background-color: rgba(24, 35, 55, 0.045); }
-[data-theme="light"] [class~="bg-neutral-900"] { background-color: #edf2f8; }
-[data-theme="light"] [class~="bg-neutral-950"] { background-color: #e4eaf3; }
-[data-theme="light"] [class~="bg-neutral-800"] { background-color: #e9eef6; }
-[data-theme="light"] [class~="bg-neutral-700"] { background-color: #d5dfec; }
-[data-theme="light"] [class~="hover:bg-neutral-900"]:hover { background-color: #e6edf6; }
-[data-theme="light"] [class~="hover:bg-neutral-800"]:hover { background-color: #dce5f1; }
-[data-theme="light"] [class~="hover:bg-neutral-700"]:hover { background-color: #cbd8e8; }
 [data-theme="light"] [class~="hover:bg-neutral-200"]:hover { background-color: #26364b; }
 [data-theme="light"] [class~="border-white"] { border-color: #182337; }
 [data-theme="light"] [class~="border-white/40"] { border-color: rgba(24, 35, 55, 0.38); }
@@ -447,7 +516,8 @@ body {
   --border-soft: var(--qt-base-border);
   --border-strong: rgba(var(--qt-window-text-rgb), 0.36);
   --code-bg: var(--qt-button);
-  --pre-bg: var(--qt-alternate-base);
+  --surface-code-rgb: var(--qt-alternate-base-rgb, var(--window-rgb));
+  --pre-bg: rgba(var(--surface-code-rgb), calc(0.94 * var(--surface-alpha, 1)));
   --link: var(--qt-link);
   --cursor: var(--qt-highlight);
   --accent: var(--qt-highlight);
@@ -494,13 +564,6 @@ body {
 :root[data-palette="qt"] [class~="placeholder:text-white/30"]::placeholder { color: rgba(var(--qt-window-text-rgb), 0.3); }
 :root[data-palette="qt"] [class~="placeholder:text-white/25"]::placeholder { color: rgba(var(--qt-window-text-rgb), 0.25); }
 
-:root[data-palette="qt"] [class~="bg-neutral-950"] { background-color: var(--qt-window); }
-:root[data-palette="qt"] [class~="bg-neutral-900"] { background-color: var(--qt-base); }
-:root[data-palette="qt"] [class~="bg-neutral-800"] { background-color: var(--qt-button); }
-:root[data-palette="qt"] [class~="bg-neutral-700"] { background-color: var(--qt-button-raised); }
-:root[data-palette="qt"] [class~="hover:bg-neutral-900"]:hover { background-color: var(--qt-window-hover); }
-:root[data-palette="qt"] [class~="hover:bg-neutral-800"]:hover { background-color: var(--qt-base-hover); }
-:root[data-palette="qt"] [class~="hover:bg-neutral-700"]:hover { background-color: var(--qt-button-hover); }
 :root[data-palette="qt"] [class~="hover:bg-neutral-200"]:hover { background-color: var(--qt-highlight-hover); }
 :root[data-palette="qt"] [class~="bg-white"] { background-color: var(--qt-highlight); }
 :root[data-palette="qt"] [class~="bg-white/10"] { background-color: rgba(var(--qt-window-text-rgb), 0.1); }
@@ -559,7 +622,7 @@ body {
 .omnibox-panel {
   overflow: hidden;
   border-bottom: 1px solid var(--border-soft);
-  background: rgba(var(--window-rgb), 0.97);
+  background: rgba(var(--surface-card-rgb, var(--window-rgb)), calc(0.97 * var(--surface-alpha, 1)));
 }
 .omnibox-list {
   max-height: min(220px, 32vh);
@@ -699,7 +762,7 @@ body {
   place-items: center;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: rgba(var(--window-rgb), 0.92);
+  background: rgba(var(--surface-card-rgb, var(--window-rgb)), calc(0.92 * var(--surface-alpha, 1)));
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   cursor: default;
 }
@@ -740,6 +803,10 @@ body {
   --radius-inner: 10px;
   --radius-control: 6px;
   --motion-scale: 1;
+  /* Written by App from Settings → Appearance and theme.conf [appearance]. */
+  --surface-alpha: 1;
+  --card-blur: 0px;
+  --card-noise: 0;
 }
 
 .omnibox-row .omnibox-label {
@@ -771,8 +838,8 @@ body {
   padding: 6px;
   border-radius: var(--radius-card);
   border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(var(--window-rgb), 0.97);
-  box-shadow: 0 24px 80px -28px rgba(4, 10, 20, 0.72);
+  background: rgba(var(--surface-card-rgb, var(--window-rgb)), calc(0.97 * var(--surface-alpha, 1)));
+  box-shadow: var(--card-shadow, 0 24px 80px -28px rgba(4, 10, 20, 0.72));
   overflow: hidden;
 }
 .shot-preview img {

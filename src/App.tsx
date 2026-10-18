@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { listen } from "@tauri-apps/api/event";
 import Dock, { Panel } from "./components/Dock";
@@ -17,6 +17,7 @@ import {
   overlayHidden,
   quitApp,
   saveSettings,
+  takeKeyboard,
   checkForUpdates,
   getSystemTheme,
   fallbackSystemTheme,
@@ -30,10 +31,24 @@ import {
   updateProviderProfile,
   SystemTheme,
   Shot,
+  type ShotReady,
 } from "./lib/store";
 
 // Some "free" router models are safety classifiers and only ever say this.
 const VERDICT = /^\s*(user\s+|content\s+)?safety\s*:?\s*(safe|unsafe)\b/i;
+
+/** `--surface-*-rgb` variables the Qt bridge sets inline; the stylesheet owns them otherwise. */
+const SURFACE_RGB_VARS = [
+  "--surface-card-rgb",
+  "--surface-sunken-rgb",
+  "--surface-base-rgb",
+  "--surface-raised-rgb",
+  "--surface-raised-hi-rgb",
+  "--surface-hover-window-rgb",
+  "--surface-hover-base-rgb",
+  "--surface-hover-raised-rgb",
+  "--surface-code-rgb",
+];
 
 function colorToRgb(color: string | null | undefined): string | null {
   const match = color?.match(/^#?([0-9a-f]{6})$/i);
@@ -164,7 +179,28 @@ export default function App() {
     }
     const unsubs: (() => void)[] = [];
     (async () => {
-      unsubs.push(await listen<SystemTheme>("theme-changed", (e) => setSysTheme(e.payload)));
+      unsubs.push(
+        await listen<SystemTheme>("theme-changed", (e) => {
+          setSysTheme(e.payload);
+          // `[appearance]` in theme.conf also carries the panel's theme, position
+          // and opacity, so an edit to the file has to refresh the settings — not
+          // only the stylesheet variables — for the change to be live.
+          void getSettings().then((next) => {
+            settingsRef.current = next;
+            setSettings(next);
+          });
+        })
+      );
+      // The card is raised as soon as the screen is captured; the thumbnail,
+      // hover preview, and backdrop image follow a moment after.
+      unsubs.push(
+        await listen<ShotReady>("shot-ready", (e) => {
+          if ((e.payload.overlay_revision ?? 0) !== (sessionRevisionRef.current ?? 0)) return;
+          if (e.payload.thumb) setThumb(e.payload.thumb);
+          if (e.payload.preview) setPreview(e.payload.preview);
+          if (e.payload.background) setDesktopBackground(e.payload.background);
+        })
+      );
       unsubs.push(await listen<string>("update-progress", (e) => setCommandNotice(e.payload)));
       unsubs.push(
         await listen<UpdateEvent>("update-done", (e) => {
@@ -306,6 +342,22 @@ export default function App() {
   const providerFor = (name: string) =>
     PROVIDERS.find((provider) => provider.id === name.toLowerCase() || provider.label.toLowerCase() === name.toLowerCase());
 
+  const openConfigFile = useCallback(() => {
+    openThemeConfig()
+      .then(() => setCommandNotice("Opened theme.conf. Changes apply on save."))
+      .catch((err) => setCommandNotice(String(err)));
+  }, []);
+
+  /**
+   * Snipping covers the whole screen, so it must own the keyboard again: the
+   * overlay hands the keyboard back whenever another window takes focus, and a
+   * click that started the snip can arrive after that hand-back.
+   */
+  const startSnip = useCallback(() => {
+    void takeKeyboard();
+    setSnipping(true);
+  }, []);
+
   const runSlashCommand = async (raw: string) => {
     const [command = "", ...args] = raw.trim().replace(/^\/+/, "").split(/\s+/);
     const name = command.toLowerCase();
@@ -394,12 +446,7 @@ export default function App() {
     }
 
     if (name === "config") {
-      try {
-        await openThemeConfig();
-        setCommandNotice("Opened theme.conf. Changes apply on save.");
-      } catch (err) {
-        setCommandNotice(String(err));
-      }
+      openConfigFile();
       return;
     }
 
@@ -412,7 +459,7 @@ export default function App() {
     }
 
     if (name === "capture" || name === "snip") {
-      setSnipping(true);
+      startSnip();
       return;
     }
 
@@ -493,8 +540,21 @@ export default function App() {
     root.style.setProperty("--radius-control", `${controlRadius}px`);
     root.style.setProperty("--border-width", `${borderWidth}px`);
     root.style.setProperty("--dock-gap", `${gap}px`);
-    if (t.shadow) root.style.setProperty("--card-shadow", t.shadow);
-    else root.style.removeProperty("--card-shadow");
+    // `[appearance] shadow_intensity = 0` arrives as the literal `none`, which
+    // cannot be composed into the focused card's `box-shadow` list — a `none`
+    // entry makes the whole declaration invalid, ring included. A transparent
+    // zero-size shadow is the same thing visually and stays list-safe.
+    const shadow = (t.shadow ?? "").trim();
+    const noShadow = shadow === "none";
+    if (shadow) {
+      root.style.setProperty("--card-shadow", noShadow ? "0 0 0 0 transparent" : shadow);
+      // With no shadow at all, the focus glow goes too: it is a shadow as well.
+      if (noShadow) root.style.setProperty("--focus-glow", "transparent");
+      else root.style.removeProperty("--focus-glow");
+    } else {
+      root.style.removeProperty("--card-shadow");
+      root.style.removeProperty("--focus-glow");
+    }
 
     if (t.font) root.style.setProperty("--ui-font", `"${t.font}", "Geist Variable", system-ui, sans-serif`);
     else root.style.removeProperty("--ui-font");
@@ -506,6 +566,27 @@ export default function App() {
     if (t.motion_reduced) root.dataset.motion = "reduced";
     else delete root.dataset.motion;
   }, [sysTheme]);
+
+  // The card's surfaces all scale from one alpha so nothing inside it stays
+  // solid while the card itself goes translucent. theme.conf `[appearance]`
+  // feeds the same three variables: opacity through the settings (it wins over
+  // settings.json), blur and noise straight from the tokens.
+  const surfaceEffects = useMemo(() => {
+    const percent = Math.min(100, Math.max(0, settings.bg_opacity ?? 100));
+    return {
+      alpha: Math.max(4, percent) / 100,
+      blur: Math.max(0, Math.min(64, sysTheme.tokens.blur ?? 0)),
+      noise: Math.max(0, Math.min(100, sysTheme.tokens.noise ?? 0)),
+    };
+  }, [settings.bg_opacity, sysTheme.tokens.blur, sysTheme.tokens.noise]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--surface-alpha", surfaceEffects.alpha.toFixed(3));
+    root.style.setProperty("--card-blur", `${surfaceEffects.blur}px`);
+    // Grain reads strongest at 100; the ceiling keeps it from eating the text.
+    root.style.setProperty("--card-noise", (surfaceEffects.noise ? (surfaceEffects.noise / 100) * 0.3 : 0).toFixed(3));
+  }, [surfaceEffects]);
 
   const qtPalette = settings.theme === "qt" ? sysTheme.palette : null;
   const qtDark = qtPalette?.dark ?? sysTheme.dark;
@@ -576,12 +657,28 @@ export default function App() {
       root.style.setProperty("--qt-button-text-rgb", colorToRgb(buttonText)!);
       root.style.setProperty("--qt-text-rgb", colorToRgb(baseText)!);
       root.style.setProperty("--qt-highlight-rgb", colorToRgb(accent)!);
+      // Surface opacity is multiplied into every plate, and CSS can only do that
+      // to a color it has as `rgba(r, g, b, …)` — hence the channel triplets
+      // alongside the hex values.
+      root.style.setProperty("--surface-card-rgb", colorToRgb(windowColor) || colorToRgb(fallbackWindow)!);
+      root.style.setProperty("--surface-sunken-rgb", colorToRgb(windowColor) || colorToRgb(fallbackWindow)!);
+      root.style.setProperty("--surface-base-rgb", colorToRgb(baseColor) || colorToRgb(fallbackWindow)!);
+      root.style.setProperty("--surface-raised-rgb", colorToRgb(buttonColor) || colorToRgb(fallbackWindow)!);
+      root.style.setProperty("--surface-raised-hi-rgb", colorToRgb(mixHex(buttonColor, buttonText, 0.14))!);
+      root.style.setProperty("--surface-hover-window-rgb", colorToRgb(mixHex(windowColor, windowText, 0.055))!);
+      root.style.setProperty("--surface-hover-base-rgb", colorToRgb(mixHex(baseColor, baseText, 0.06))!);
+      root.style.setProperty("--surface-hover-raised-rgb", colorToRgb(mixHex(buttonColor, buttonText, 0.08))!);
+      root.style.setProperty("--surface-code-rgb", colorToRgb(alternateBase)!);
       root.style.setProperty("--qt-window-hover", mixHex(windowColor, windowText, 0.055));
       root.style.setProperty("--qt-base-hover", mixHex(baseColor, baseText, 0.06));
       root.style.setProperty("--qt-button-hover", mixHex(buttonColor, buttonText, 0.08));
       root.style.setProperty("--qt-button-raised", mixHex(buttonColor, buttonText, 0.14));
       root.style.setProperty("--qt-highlight-hover", mixHex(accent, accentText, 0.1));
       root.style.setProperty("--qt-base-border", rgba(baseText, 0.14));
+    } else {
+      // Without a Qt palette the built-in surfaces come from the stylesheet, so
+      // any triplets left over from a Qt session have to go back out of the way.
+      for (const name of SURFACE_RGB_VARS) root.style.removeProperty(name);
     }
   }, [dark, qtPalette, sysTheme]);
 
@@ -631,6 +728,8 @@ export default function App() {
               snipping={snipping}
               settings={settings}
               hasUpdate={hasUpdate}
+              blur={surfaceEffects.blur}
+              noise={surfaceEffects.noise}
               onSubmit={(prompt) => {
                 if (prompt.trimStart().startsWith("/")) void runSlashCommand(prompt);
                 else void submit(prompt);
@@ -638,7 +737,8 @@ export default function App() {
               onSettingsSectionChange={setSettingsSection}
               onToggleSettings={() => (panel === "settings" ? setPanel(afterSettings()) : openSettings("model"))}
               onSaveSettings={save}
-              onStartSnip={() => setSnipping(true)}
+              onStartSnip={startSnip}
+              onOpenConfig={openConfigFile}
               onCancelSnip={() => setSnipping(false)}
               onSelectSnip={cropSelection}
               onRetry={retry}

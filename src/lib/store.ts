@@ -20,6 +20,12 @@ export interface Settings {
   provider_profiles: Record<string, ProviderProfile>;
   position: ReplyPosition;
   max_tokens: number;
+  /**
+   * Card surface opacity as a percentage. It drives `--surface-alpha`, which
+   * every surface inside the card scales by, so the whole card — thumbnail,
+   * palette, chat bubbles, settings fields — thins out together.
+   * `theme.conf [appearance] opacity` overrides this.
+   */
   bg_opacity: number;
   theme: ThemeMode;
 }
@@ -272,6 +278,16 @@ export interface Shot {
   preview: string;
 }
 
+/**
+ * The second half of a summon. The card is raised as soon as the frame is on
+ * disk, and the downscaled images follow on this event.
+ */
+export interface ShotReady extends Shot {
+  /** The full capture, for the i3/X11 backdrop. Empty unless it is needed. */
+  background: string;
+  overlay_revision: number;
+}
+
 export async function cropScreenshot(rect: ScreenRect, viewport: { width: number; height: number }): Promise<Shot> {
   if (!inTauri) return { thumb: "", preview: "" };
   return await invoke<Shot>("crop_screenshot", {
@@ -287,6 +303,20 @@ export interface InteractiveRect {
   y: number;
   width: number;
   height: number;
+}
+
+/**
+ * Asks the compositor to hand the keyboard to the overlay again — the counterpart
+ * of releasing it when another window takes focus. Safe to call on every
+ * compositor: outside a layer-shell session it is a no-op.
+ */
+export async function takeKeyboard(): Promise<void> {
+  if (!inTauri) return;
+  try {
+    await invoke("take_keyboard");
+  } catch {
+    /* the overlay is not holding the keyboard; nothing to take back */
+  }
 }
 
 export async function setInteractiveRegions(
@@ -382,7 +412,12 @@ export interface ThemeTokens {
   font_size: number | null;
   motion_reduced: boolean;
   speed: number;
+  /** Composed CSS box-shadow, or "none" when `[appearance] shadow_intensity = 0`. */
   shadow: string | null;
+  /** `[appearance] blur` — backdrop blur in px behind the card. */
+  blur: number | null;
+  /** `[appearance] noise` — grain over the card, as a 0-100 percentage. */
+  noise: number | null;
 }
 
 export interface SystemTheme {
@@ -410,6 +445,8 @@ const FALLBACK_TOKENS: ThemeTokens = {
   motion_reduced: false,
   speed: 1,
   shadow: null,
+  blur: null,
+  noise: null,
 };
 
 export function fallbackSystemTheme(): SystemTheme {
