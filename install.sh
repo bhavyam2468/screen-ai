@@ -594,6 +594,12 @@ receipt_set() { # receipt_set KEY VALUE — upsert into the install receipt
   mv "$RECEIPT.tmp" "$RECEIPT"
 }
 
+receipt_get() {
+  [ -f "$RECEIPT" ] || return 0
+  awk -v key="$1" 'index($0, key "=") == 1 { value=substr($0, length(key)+2) } END { print value }' "$RECEIPT"
+}
+
+
 # Refuse to edit symlinked configuration files or any file reached through a
 # symlinked parent (dotfile managers commonly use these paths intentionally).
 safe_to_edit() {
