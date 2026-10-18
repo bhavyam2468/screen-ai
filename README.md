@@ -56,19 +56,34 @@ Open Screen AI with your configured shortcut (default `Super+Shift+S`) or:
 screen-ai --toggle
 ```
 
+`--toggle` is cheap even from a compositor hotkey: the running instance answers over a small Unix socket (`$XDG_RUNTIME_DIR/screen-ai/hotkey.sock`) and the short-lived process exits before loading GTK, so the keypress does not pay for a second copy of the app booting up just to be told it is redundant. Since setup also installs an autostart entry, the app is normally already up and every summon is a socket round trip.
+
+The card is raised as soon as the screen is on disk; the thumbnail and the hover preview are decoded and downscaled afterwards and arrive on their own event. Set `SCREEN_AI_TIMING=1` on the app itself to print both numbers — `shown` (card up) and `processed` (image ready).
+
 - Ask a question and press **Enter**. Your screenshot is sent with the prompt to the provider you configured; **Shift+Enter** adds a line.
 - Click the screenshot thumbnail for a crosshair snip. Drag over the screen to replace the full-screen image with just that region; press **Esc** to cancel.
 - Type **`/`** to browse commands, or press **Ctrl+K** to open the command palette. Use **↑ / ↓**, **Enter**, and **Tab** without leaving the input bar. Useful commands include `/model`, `/provider openai`, `/key gemini <key>`, `/theme qt`, `/update`, `/capture`, `/hide`, and `/exit` (quit the tray app).
 - Type **`@`** to find and mention a local file. Mentioned files are read-only UTF-8 text, limited to 512 KiB per file and 1 MiB total per request, and are sent to the selected provider as context. Binary files are not attached.
 - Settings are split into **Model**, **Appearance**, and **Updates** subpanels. Gemini, OpenAI, Anthropic, OpenRouter, Groq, Ollama, and custom provider profiles each keep their own API key, endpoint, and model selection.
+- Everything in **Appearance** is also a key in `theme.conf` (`[appearance] theme`, `position`, `opacity`), and saving the panel rewrites those lines so the file always mirrors the menu — never the other way round. The file carries the rest: `blur`, `noise`, `shadow_intensity`, `shadow_blur`, `shadow_offset`, `shadow_spread`, `shadow_color`, plus `[shape]` radius/border/gap, `[type]` fonts, and `[motion]` speed. A value in the file wins over the panel, and every one of them applies while the overlay is open.
+- **Opacity** scales every surface the card paints (plate, command palette, chat bubbles, code blocks, settings fields) with the same multiplier, so the card thins out as one object instead of leaving solid islands behind. **Blur** needs `opacity < 100` to be visible: an overlay window cannot read the desktop behind it, so Screen AI blurs the screenshot it just captured and uses that as the plate. **`shadow_intensity = 0`** removes the drop shadow entirely — on a translucent card a full shadow reads as a smudge rather than as glass.
 - Continue with follow-up questions in the same thread. Open settings with the gear button or `screen-ai --settings`; `Ctrl+,` toggles the settings panel.
 - Dismiss the overlay with **Esc**.
 
 ### Keyboard focus
 
-Summoning the overlay takes the keyboard so you can type immediately. It does **not** keep it: on Niri, Hyprland and Sway the app follows the compositor's focus events and hands the keyboard back the moment another window takes focus, so you can click the window behind the card, run an interactive screenshot tool, or search the Niri overview without the overlay swallowing your keys. Clicking the card takes the keyboard back. The card border shows the current state — accent color while the overlay holds the keyboard, muted otherwise.
+Summoning the overlay takes the keyboard so you can type immediately. It does **not** keep it: on Niri, Hyprland and Sway the app follows the compositor's focus events and hands the keyboard back the moment another window takes focus, so you can click the window behind the card, run an interactive screenshot tool, or search the Niri overview without the overlay swallowing your keys — including the **Enter** that confirms a selection. Giving it back means dropping the layer-shell keyboard mode all the way to _none_, so the surface stops being focusable at all; clicking anywhere on the card asks for the grab again instead of waiting for the compositor to re-focus the overlay by itself. The card border shows the current state — accent color while the overlay holds the keyboard, muted otherwise.
 
-Compositors that publish no focus events keep the grab while the overlay is open (dismiss it with **Esc** to type elsewhere). Set `SCREEN_AI_KEYBOARD=on-demand` to never grab at all: the overlay then receives keys only after the card is clicked, everywhere.
+Compositors that publish no focus events cannot notice the click, so there the grab lasts until the overlay is dismissed. Pick a policy in `~/.config/screen-ai/theme.conf`:
+
+```ini
+[input]
+keyboard = auto        # grab on summon, release when another window takes focus
+keyboard = on-demand   # never grab; the card types after you click it, everywhere
+keyboard = sticky      # keep the grab until the overlay is dismissed
+```
+
+`$SCREEN_AI_KEYBOARD` overrides the file, for testing from a terminal.
 
 Settings can follow the desktop theme or use a detected **Qt / Matugen** palette. Screen AI reads KDE colors from `~/.config/kdeglobals` and active `qt5ct` / `qt6ct` color-scheme files, then maps window, surface, text, button, selection/accent, and link colors into the overlay. If Matugen writes to one of those active Qt/KDE theme files, its colors are picked up at launch or the next time the overlay is summoned. Matugen templates can write anywhere, so other custom output paths are not guessed. Screen AI is a Tauri WebView rather than a Qt widget app: Qt widget styles, control geometry, and Qt fonts cannot be imported directly; its layout, motion, and Geist typography stay Screen AI's own.
 

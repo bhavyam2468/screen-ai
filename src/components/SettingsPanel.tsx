@@ -35,6 +35,8 @@ interface Props {
   section: SettingsSection;
   onSectionChange: (section: SettingsSection) => void;
   onSave: (settings: Settings) => void;
+  /** Opens theme.conf, the config file that carries these values plus the ones with no control here. */
+  onOpenConfig?: () => void;
   /** Pre-fills the model search, e.g. from `/model claude`. */
   modelQuery?: string;
 }
@@ -73,7 +75,7 @@ function profileFrom(settings: Settings): ProviderProfile {
   };
 }
 
-export default function SettingsPanel({ settings, section, onSectionChange, onSave, modelQuery = "" }: Props) {
+export default function SettingsPanel({ settings, section, onSectionChange, onSave, onOpenConfig, modelQuery = "" }: Props) {
   const normalizedSettings = normalizeSettings(settings);
   const [draft, setDraft] = useState<Settings>(normalizedSettings);
   const [showKey, setShowKey] = useState(false);
@@ -393,7 +395,7 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
               <input
                 id="overlay-opacity"
                 type="range"
-                min={25}
+                min={10}
                 max={100}
                 step={1}
                 value={draft.bg_opacity ?? 100}
@@ -421,6 +423,23 @@ export default function SettingsPanel({ settings, section, onSectionChange, onSa
                   </button>
                 ))}
               </div>
+            </div>
+
+            <div className="flex items-start gap-2 border-t border-white/10 pt-2 text-[10px] leading-relaxed text-white/45">
+              <p className="min-w-0 flex-1">
+                <span className="font-mono">theme.conf</span> sets all of this and more: blur, noise,
+                shadow_intensity / shadow_blur, radius, gap, fonts and motion speed. A value written in the
+                file wins over the panel, and edits take effect while the overlay is open.
+              </p>
+              {onOpenConfig && (
+                <button
+                  type="button"
+                  onClick={onOpenConfig}
+                  className="shrink-0 rounded-[var(--radius-control)] border border-white/10 px-2 py-1 text-[10px] text-white/60 transition-colors hover:bg-white/5 hover:text-white"
+                >
+                  Open
+                </button>
+              )}
             </div>
           </div>
         )}

@@ -62,7 +62,12 @@ pub struct ThemeTokens {
     pub motion_reduced: bool,
     /// Multiplier for animation durations; 1.0 is the default, 2.0 is slower.
     pub speed: f32,
+    /// Composed CSS `box-shadow` for the card. `Some("none")` removes it.
     pub shadow: Option<String>,
+    /// `[appearance] blur` — backdrop blur in px behind the card (0 = off).
+    pub blur: Option<u32>,
+    /// `[appearance] noise` — grain over the card surface in % (0 = off).
+    pub noise: Option<u32>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -133,6 +138,135 @@ pub fn ensure_theme_config() {
         eprintln!("screen-ai: could not create {}: {error}", path.display());
     }
 }
+
+/// Patches `key = value` lines inside one section of theme.conf, keeping every
+/// comment and uncommenting a documented default instead of duplicating it.
+///
+/// Settings → Appearance writes through here so the file always mirrors what the
+/// panel can set: the panel is allowed to be a subset of the config, never the
+/// other way round. The write is atomic (temp file + rename), so a crash cannot
+/// leave a truncated theme behind.
+pub fn write_config_values(section: &str, values: &[(&str, &str)]) -> Result<(), String> {
+    if values.is_empty() {
+        return Ok(());
+    }
+    let path = theme_config_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let original = std::fs::read_to_string(&path).unwrap_or_else(|_| DEFAULT_THEME_CONFIG.to_string());
+    let owned: Vec<(String, String)> = values
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect();
+    let body = patch_config_text(&original, section, &owned);
+
+    let temp = path.with_file_name(format!(
+        "{}.tmp",
+        path.file_name().and_then(|name| name.to_str()).unwrap_or("theme.conf")
+    ));
+    std::fs::write(&temp, body).map_err(|e| e.to_string())?;
+    std::fs::rename(&temp, &path).map_err(|e| e.to_string())
+}
+
+/// The section-aware edit behind [`write_config_values`], split out so it can be
+/// tested without touching the real config directory.
+fn patch_config_text(original: &str, section: &str, values: &[(String, String)]) -> String {
+    let mut lines: Vec<String> = original.lines().map(|line| line.to_string()).collect();
+    let header = format!("[{}]", section.trim().to_lowercase());
+
+    let index = match lines
+        .iter()
+        .position(|line| line.trim().to_lowercase() == header)
+    {
+        Some(index) => index,
+        None => {
+            if lines.last().is_some_and(|line| !line.trim().is_empty()) {
+                lines.push(String::new());
+            }
+            lines.push(header.clone());
+            for (key, value) in values {
+                lines.push(format!("{key} = {value}"));
+            }
+            return format!("{}\n", lines.join("\n"));
+        }
+    };
+
+    // The section runs to the next header or to the end of the file.
+    let mut end = index + 1;
+    while end < lines.len() {
+        let trimmed = lines[end].trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            break;
+        }
+        end += 1;
+    }
+
+    let mut missing: Vec<String> = Vec::new();
+    for (key, value) in values {
+        let wanted = key.to_lowercase();
+        let found = (index + 1..end)
+            .find(|i| config_line_key(&lines[*i]).as_deref() == Some(wanted.as_str()));
+        match found {
+            // Rewrite the line in place — including a commented-out default, which
+            // is how the shipped template documents every key — so the note that
+            // explains the key survives and the key is never duplicated.
+            Some(i) => {
+                let indent = leading_whitespace(&lines[i]);
+                let comment = trailing_comment(&lines[i]);
+                lines[i] = format!("{indent}{key} = {value}{comment}");
+            }
+            None => missing.push(format!("{key} = {value}")),
+        }
+    }
+
+    // Keys the section has never heard of go after its last entry, above any blank
+    // line that separates it from the next section.
+    let mut at = end;
+    while at > index + 1 && lines[at - 1].trim().is_empty() {
+        at -= 1;
+    }
+    for line in missing {
+        lines.insert(at, line);
+        at += 1;
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+/// The key a theme.conf line assigns, ignoring a leading `#`. `None` for
+/// section headers, blanks, and comment lines that are not `key = value`.
+fn config_line_key(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let body = match trimmed.strip_prefix('#').or_else(|| trimmed.strip_prefix(';')) {
+        Some(rest) => rest.trim_start(),
+        None => trimmed,
+    };
+    let (key, _) = body.split_once('=')?;
+    let key = key.trim().to_lowercase();
+    (!key.is_empty() && !key.starts_with('[')).then_some(key)
+}
+
+fn leading_whitespace(line: &str) -> String {
+    line.chars()
+        .take_while(|ch| ch.is_whitespace())
+        .collect::<String>()
+}
+
+/// The `# …` tail of a line, so rewriting `# opacity = 60  # card surface`
+/// keeps the note that explains the key.
+fn trailing_comment(line: &str) -> String {
+    let Some((_, value)) = line.split_once('=') else {
+        return String::new();
+    };
+    let head = strip_inline_comment(value);
+    let rest = value[head.len()..].trim();
+    if rest.starts_with('#') {
+        format!("  {rest}")
+    } else {
+        String::new()
+    }
+}
+
 
 // ─── INI parsing ─────────────────────────────────────────────────────────────
 
@@ -346,6 +480,182 @@ struct RiceConfig {
     motion_reduced: bool,
     speed: f32,
     shadow: Option<String>,
+    blur: Option<u32>,
+    noise: Option<u32>,
+}
+
+/// `[appearance]` values that belong to a setting rather than to a stylesheet
+/// variable, so `Settings` stays the single source of truth for the WebView.
+#[derive(Debug, Clone, Default)]
+pub struct AppearanceOverrides {
+    pub theme: Option<String>,
+    pub position: Option<String>,
+    pub opacity: Option<u32>,
+}
+
+/// `[input] keyboard` — the policy for the layer-shell keyboard grab. Read here
+/// rather than through `Settings` because it changes how the window is mapped,
+/// not how the card is painted.
+pub fn keyboard_pref() -> Option<String> {
+    let ini = read_ini(&theme_config_path()).unwrap_or_default();
+    ["input", "appearance"]
+        .iter()
+        .find_map(|section| ini_value(&ini, section, "keyboard"))
+        .map(|value| unquote(value).trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+}
+
+/// Reads `[appearance]` from theme.conf. Every key is optional: a key the user
+/// never wrote leaves the matching `settings.json` value in charge, and a key
+/// they did write wins over it. This is what makes the config file a complete
+/// description of the overlay's look, not only an extra layer on top of it.
+pub fn appearance_overrides() -> AppearanceOverrides {
+    let ini = read_ini(&theme_config_path()).unwrap_or_default();
+    let text = |key: &str| {
+        text_in(&ini, &APPEARANCE_SECTIONS, key)
+            .map(|value| unquote(&value).trim().to_lowercase())
+            .filter(|value| !value.is_empty())
+    };
+    AppearanceOverrides {
+        // The file may name a mode the way people describe it rather than the
+        // way the panel spells it; both mean one of the four real choices.
+        theme: text("theme").map(|theme| match theme.as_str() {
+            "matugen" | "qt/matugen" | "desktop" => "qt".to_string(),
+            "system" => "auto".to_string(),
+            other => other,
+        }),
+        position: text("position"),
+        opacity: text("opacity").and_then(|value| {
+            let digits = value.strip_suffix('%').unwrap_or(value.as_str());
+            digits
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite())
+                .map(|value| value.clamp(0.0, 100.0).round() as u32)
+        }),
+    }
+}
+
+/// Keys that describe how the card is drawn. They may live in `[appearance]`
+/// (the complete list) or in the older `[shape]` / `[shadow]` sections.
+const APPEARANCE_SECTIONS: [&str; 3] = ["appearance", "shape", "shadow"];
+
+fn text_in(ini: &Ini, sections: &[&str], key: &str) -> Option<String> {
+    sections
+        .iter()
+        .find_map(|section| ini_value(ini, section, key))
+        .map(|value| value.to_string())
+}
+
+fn number_in<T: std::str::FromStr>(ini: &Ini, sections: &[&str], key: &str) -> Option<T> {
+    text_in(ini, sections, key)
+        .and_then(|value| unquote(&value).parse::<T>().ok())
+}
+
+/// Shadow knobs, composed into one CSS `box-shadow`. Setting any of them opts
+/// out of the borrowed Niri shadow, so `shadow_intensity = 0` really means
+/// "no shadow": a translucent card with a full drop shadow behind it reads as
+/// a smudge rather than as glass.
+#[derive(Default)]
+struct ShadowParts {
+    raw: Option<String>,
+    intensity: Option<u32>,
+    blur: Option<u32>,
+    offset_x: Option<i32>,
+    offset_y: Option<i32>,
+    spread: Option<i32>,
+    color: Option<String>,
+}
+
+impl ShadowParts {
+    fn is_empty(&self) -> bool {
+        self.raw.is_none()
+            && self.intensity.is_none()
+            && self.blur.is_none()
+            && self.offset_x.is_none()
+            && self.offset_y.is_none()
+            && self.spread.is_none()
+            && self.color.is_none()
+    }
+
+    fn css(&self) -> String {
+        if let Some(raw) = &self.raw {
+            return raw.clone();
+        }
+        let intensity = self.intensity.unwrap_or(100).min(200);
+        if intensity == 0 {
+            return "none".to_string();
+        }
+        let blur = self.blur.unwrap_or(80).min(400);
+        let offset_x = self.offset_x.unwrap_or(0).clamp(-400, 400);
+        let offset_y = self.offset_y.unwrap_or(24).clamp(-400, 400);
+        let spread = self.spread.unwrap_or(-28).clamp(-400, 400);
+        let alpha = (0.72 * intensity as f32 / 100.0).min(1.0);
+        let color = self
+            .color
+            .as_deref()
+            .and_then(|color| tinted_shadow_color(color, alpha))
+            .unwrap_or_else(|| format!("rgba(4, 10, 20, {alpha:.3})"));
+        format!("{offset_x}px {offset_y}px {blur}px {spread}px {color}")
+    }
+}
+
+/// Re-applies the intensity to a color the user wrote, so `shadow_intensity`
+/// scales whatever `shadow_color` they chose. Anything Screen AI cannot parse
+/// is passed through untouched rather than being silently flattened.
+fn tinted_shadow_color(raw: &str, alpha: f32) -> Option<String> {
+    let value = unquote(raw);
+    if let Some(hex) = value.strip_prefix('#') {
+        // theme.conf faces CSS, so the long form is #rrggbbaa.
+        let (digits, own) = match hex.len() {
+            3 => (hex.chars().flat_map(|ch| [ch, ch]).collect::<String>(), 1.0),
+            4 => {
+                let (rgb, a) = hex.split_at(3);
+                let expanded = rgb.chars().flat_map(|ch| [ch, ch]).collect::<String>();
+                let alpha_byte = u8::from_str_radix(&a[..1].repeat(2), 16).ok()?;
+                (expanded, alpha_byte as f32 / 255.0)
+            }
+            6 => (hex.to_string(), 1.0),
+            8 => {
+                let (rgb, a) = hex.split_at(6);
+                let alpha_byte = u8::from_str_radix(a, 16).ok()?;
+                (rgb.to_string(), alpha_byte as f32 / 255.0)
+            }
+            _ => return None,
+        };
+        if !digits.chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return None;
+        }
+        let channel = |range: std::ops::Range<usize>| -> Option<u32> {
+            u8::from_str_radix(&digits[range], 16).map(u32::from).ok()
+        };
+        let (r, g, b) = (channel(0..2)?, channel(2..4)?, channel(4..6)?);
+        return Some(format!("rgba({r}, {g}, {b}, {:.3})", alpha * own));
+    }
+
+    let channels: Vec<f32> = value
+        .trim_start_matches("rgb(")
+        .trim_start_matches("rgba(")
+        .trim_end_matches(')')
+        .split(|ch: char| ch == ',' || ch.is_whitespace())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.trim().parse::<f32>().ok())
+        .collect();
+    if channels.len() >= 3 {
+        let own = if channels.len() >= 4 {
+            channels[3].clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let (r, g, b) = (
+            channels[0] as u32,
+            channels[1] as u32,
+            channels[2] as u32,
+        );
+        return Some(format!("rgba({r}, {g}, {b}, {:.3})", alpha * own));
+    }
+    None
 }
 
 fn read_rice_config() -> RiceConfig {
@@ -356,9 +666,9 @@ fn read_rice_config() -> RiceConfig {
             .filter(|value| !value.is_empty())
     };
     // theme.conf faces CSS, so an 8-digit value is #rrggbbaa (not Qt's #aarrggbb).
-    let color = |section: &str, key: &str| {
-        ini_value(&ini, section, key).and_then(css_color)
-    };
+    let color = |section: &str, key: &str| ini_value(&ini, section, key).and_then(css_color);
+    let shape = |key: &str| text_in(&ini, &APPEARANCE_SECTIONS, key);
+    let shape_number = |key: &str| number_in::<u32>(&ini, &APPEARANCE_SECTIONS, key);
 
     let source = text("palette", "source")
         .map(|value| value.to_lowercase())
@@ -369,25 +679,35 @@ fn read_rice_config() -> RiceConfig {
         .unwrap_or_else(default_matugen_path);
     let motion_mode = text("motion", "mode").map(|mode| mode.to_lowercase());
 
+    let shadow = ShadowParts {
+        raw: shape("shadow"),
+        intensity: shape_number("shadow_intensity"),
+        blur: shape_number("shadow_blur"),
+        offset_x: number_in::<i32>(&ini, &APPEARANCE_SECTIONS, "shadow_offset_x"),
+        offset_y: number_in::<i32>(&ini, &APPEARANCE_SECTIONS, "shadow_offset"),
+        spread: number_in::<i32>(&ini, &APPEARANCE_SECTIONS, "shadow_spread"),
+        color: shape("shadow_color"),
+    };
+
     RiceConfig {
         source,
         matugen_file,
         explicit: section_palette(&ini, "palette"),
-        radius: text("shape", "radius")
+        radius: shape("radius")
             .and_then(|value| value.parse::<u32>().ok())
             .map(|radius| radius.min(48)),
-        inner_radius: text("shape", "inner_radius")
+        inner_radius: shape("inner_radius")
             .and_then(|value| value.parse::<u32>().ok())
             .map(|radius| radius.min(48)),
-        control_radius: text("shape", "control_radius")
+        control_radius: shape("control_radius")
             .and_then(|value| value.parse::<u32>().ok())
             .map(|radius| radius.min(48)),
-        border_width: text("shape", "border_width")
+        border_width: shape("border_width")
             .and_then(|value| value.parse::<u32>().ok())
             .map(|width| width.min(16)),
-        active_border: color("shape", "active_border"),
-        inactive_border: color("shape", "inactive_border"),
-        gap: text("shape", "gap")
+        active_border: color("shape", "active_border").or_else(|| color("appearance", "active_border")),
+        inactive_border: color("shape", "inactive_border").or_else(|| color("appearance", "inactive_border")),
+        gap: shape("gap")
             .and_then(|value| value.parse::<u32>().ok())
             .map(|gap| gap.min(120)),
         font: text("type", "font"),
@@ -400,7 +720,9 @@ fn read_rice_config() -> RiceConfig {
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|speed| speed.is_finite() && *speed > 0.0 && *speed <= 4.0)
             .unwrap_or(1.0),
-        shadow: text("shape", "shadow").or_else(|| text("shadow", "shadow")),
+        shadow: (!shadow.is_empty()).then(|| shadow.css()),
+        blur: shape_number("blur").map(|blur| blur.min(64)),
+        noise: shape_number("noise").map(|noise| noise.min(100)),
     }
 }
 
@@ -1197,6 +1519,8 @@ pub fn get_system_theme() -> SystemTheme {
             motion_reduced: rice.motion_reduced,
             speed: rice.speed,
             shadow,
+            blur: rice.blur,
+            noise: rice.noise,
         },
     }
 }
@@ -1255,7 +1579,10 @@ fn stamp() -> Stamp {
 
 /// Polls the theme files on a background thread and calls `on_change` with a
 /// fresh theme whenever one of them changes. Cheap enough to run all the time:
-/// one metadata call per file every 1.5 s, and no subprocesses unless a change occurs.
+/// one metadata call per file every 400 ms, and no subprocesses unless a change
+/// occurs. The interval is short on purpose — `theme.conf` is meant to be edited
+/// while the overlay is open, and a value that lands a second later does not
+/// feel live.
 pub fn spawn_watcher<F>(on_change: F)
 where
     F: Fn(SystemTheme) + Send + 'static,
@@ -1263,7 +1590,7 @@ where
     std::thread::spawn(move || {
         let mut last = stamp();
         loop {
-            std::thread::sleep(Duration::from_millis(1500));
+            std::thread::sleep(Duration::from_millis(400));
             let current = stamp();
             if current != last {
                 last = current;
@@ -1405,4 +1732,95 @@ mod tests {
         assert_eq!(rgba_color("#ff0000"), Some("#ff0000".into()));
         assert_eq!(rgba_color("rgb(1, 2, 3)"), Some("#010203".into()));
     }
-}
+
+    #[test]
+    fn shadow_parts_compose_one_css_shadow() {
+        let parts = ShadowParts {
+            raw: None,
+            intensity: Some(50),
+            blur: Some(40),
+            offset_x: None,
+            offset_y: None,
+            spread: None,
+            color: None,
+        };
+        assert_eq!(
+            parts.css(),
+            "0px 24px 40px -28px rgba(4, 10, 20, 0.360)"
+        );
+
+        // Zero intensity is the documented way to get rid of the shadow: a
+        // translucent card with a drop shadow behind it reads as a smudge.
+        let off = ShadowParts {
+            intensity: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(off.css(), "none");
+
+        // An explicit `shadow` still wins over the parts.
+        let raw = ShadowParts {
+            raw: Some("inset 0 0 0 1px #000".into()),
+            intensity: Some(0),
+            ..Default::default()
+        };
+        assert_eq!(raw.css(), "inset 0 0 0 1px #000");
+    }
+
+    #[test]
+    fn shadow_intensity_scales_the_users_own_color() {
+        assert_eq!(
+            tinted_shadow_color("#0b1e33", 0.5).as_deref(),
+            Some("rgba(11, 30, 51, 0.500)")
+        );
+        // CSS alpha comes last, and multiplies with the intensity.
+        assert_eq!(
+            tinted_shadow_color("#0b1e3380", 0.5).as_deref(),
+            Some("rgba(11, 30, 51, 0.251)")
+        );
+        assert_eq!(
+            tinted_shadow_color("rgba(1, 2, 3, 0.5)", 0.4).as_deref(),
+            Some("rgba(1, 2, 3, 0.200)")
+        );
+        // Anything Screen AI cannot parse is left for CSS to deal with.
+        assert_eq!(tinted_shadow_color("currentColor", 0.5), None);
+    }
+
+    #[test]
+    fn config_line_key_ignores_the_comment_marker() {
+        assert_eq!(config_line_key("radius = 18").as_deref(), Some("radius"));
+        assert_eq!(config_line_key("  # radius = 18").as_deref(), Some("radius"));
+        assert_eq!(config_line_key("[shape]").as_deref(), None);
+        assert_eq!(config_line_key("# a note").as_deref(), None);
+    }
+
+    #[test]
+    fn patching_the_config_uncomments_and_keeps_the_notes() {
+        let original = "# top note\n[shape]\n# radius = 18  # card corners\n# gap = 24\n\n[type]\nfont = Inter\n";
+        let patched = patch_config_text(
+            original,
+            "shape",
+            &[
+                ("radius".to_string(), "12".to_string()),
+                ("opacity".to_string(), "60".to_string()),
+            ],
+        );
+        assert_eq!(
+            patched,
+            "# top note\n[shape]\nradius = 12  # card corners\n# gap = 24\nopacity = 60\n\n[type]\nfont = Inter\n"
+        );
+        // Re-reading the patched text yields exactly the values the panel set.
+        let ini = parse_ini(&patched);
+        assert_eq!(ini_value(&ini, "shape", "radius"), Some("12"));
+        assert_eq!(ini_value(&ini, "shape", "opacity"), Some("60"));
+        assert_eq!(ini_value(&ini, "type", "font"), Some("Inter"));
+    }
+
+    #[test]
+    fn patching_creates_a_missing_section_at_the_end() {
+        let patched = patch_config_text(
+            "[palette]\nsource = auto\n",
+            "appearance",
+            &[("theme".to_string(), "dark".to_string())],
+        );
+        assert_eq!(patched, "[palette]\nsource = auto\n\n[appearance]\ntheme = dark\n");
+    }

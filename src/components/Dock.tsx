@@ -20,6 +20,7 @@ import {
   SettingsSection,
   searchLocalFiles,
   setInteractiveRegions,
+  takeKeyboard,
 } from "../lib/store";
 import { scaleSpring, useMotionScale, useSeconds } from "../lib/motion";
 
@@ -67,12 +68,18 @@ interface Props {
   onToggleSettings: () => void;
   onSaveSettings: (settings: Settings) => void;
   onStartSnip: () => void;
+  /** Opens theme.conf, which carries every appearance key plus the ones with no control. */
+  onOpenConfig?: () => void;
   onCancelSnip: () => void;
   onSelectSnip: (rect: ScreenRect) => void;
   preview: string | null;
   modelQuery: string;
   onRetry: () => void;
   onDismiss: () => void;
+  /** `[appearance] blur` in px; 0 disables the frosted plate behind the card. */
+  blur: number;
+  /** `[appearance] noise`, 0-100. */
+  noise: number;
 }
 
 /** Measures once per content change and lets the card use one coordinated height transition. */
@@ -182,10 +189,10 @@ export default function Dock(p: Props) {
   const selectionAnchor = useRef<{ x: number; y: number } | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  const frostRef = useRef<HTMLDivElement>(null);
   const previewTimer = useRef<number>(0);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewPos, setPreviewPos] = useState<{ left: number; top?: number; bottom?: number }>({ left: 12, top: 12 });
-  const opacity = (p.settings.bg_opacity ?? 100) / 100;
   const reduced = useReducedMotion() ?? false;
   // theme.conf `[motion] speed`, published by App through MotionScaleProvider.
   const seconds = useSeconds();
@@ -272,6 +279,20 @@ export default function Dock(p: Props) {
     input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [value]);
 
+  /**
+   * Keeps the click-through region and the frosted plate lined up with the card.
+   * The plate is a viewport-sized copy of the capture inside the card, shifted
+   * back to the screen origin, so what shows through the translucent card is the
+   * blurred desktop exactly where it belongs. Writing both from the same measure
+   * keeps a layout animation from costing a React render per frame.
+   */
+  const syncToCard = (rect: DOMRect) => {
+    const frost = frostRef.current;
+    if (frost) {
+      frost.style.transform = `translate(${-Math.round(rect.left)}px, ${-Math.round(rect.top)}px)`;
+    }
+  };
+
   // Let clicks pass through everywhere but the card, except while choosing a crop.
   useEffect(() => {
     const element = cardRef.current;
@@ -289,6 +310,7 @@ export default function Dock(p: Props) {
       frame = requestAnimationFrame(() => {
         const rect = element.getBoundingClientRect();
         const pad = 6;
+        syncToCard(rect);
         setInteractiveRegions([{
           x: Math.max(0, Math.floor(rect.left - pad)),
           y: Math.max(0, Math.floor(rect.top - pad)),
@@ -306,7 +328,7 @@ export default function Dock(p: Props) {
       observer.disconnect();
       window.removeEventListener("resize", push);
     };
-  }, [p.snipping, p.sessionRevision]);
+  }, [p.snipping, p.sessionRevision, p.blur, p.preview, p.settings.position]);
 
   // The overlay only owns the keyboard part of the time: it grabs it when
   // summoned and gives it back when another window is focused (see desktop.rs).
@@ -492,6 +514,11 @@ export default function Dock(p: Props) {
     }
   };
 
+  // A blur needs something to blur, and the only pixels behind this card are the
+  // capture taken for it — so the plate appears once `[appearance] blur` is on
+  // and the screenshot has arrived.
+  const frost = p.blur > 0 && p.preview ? p.preview : null;
+
   return (
     <>
       <motion.div
@@ -504,6 +531,7 @@ export default function Dock(p: Props) {
         onLayoutAnimationComplete={() => {
           const rect = cardRef.current?.getBoundingClientRect();
           if (!rect || p.snipping) return;
+          syncToCard(rect);
           setInteractiveRegions([{
             x: Math.max(0, Math.floor(rect.left - 6)),
             y: Math.max(0, Math.floor(rect.top - 6)),
@@ -512,18 +540,29 @@ export default function Dock(p: Props) {
           }], p.sessionRevision);
         }}
         style={{
-          backgroundColor: `rgba(var(--window-rgb),${opacity})`,
           width: showCommandPalette ? "min(760px, calc(100vw - 24px))" : "min(540px, calc(100vw - 24px))",
           visibility: p.snipping ? "hidden" : "visible",
         }}
         data-focused={windowFocused && !p.snipping ? "true" : "false"}
+        // The overlay hands the keyboard back as soon as another window takes
+        // focus. Clicking the card is the user asking for it again, so ask the
+        // compositor directly instead of hoping it re-focuses the layer surface.
+        onPointerDownCapture={() => {
+          if (!p.snipping) void takeKeyboard();
+        }}
         onClick={(e) => {
           if (e.target === e.currentTarget && p.panel !== "settings") {
             inputRef.current?.focus();
           }
         }}
         className="dock-card pointer-events-auto relative z-10 max-w-[calc(100vw-24px)] overflow-hidden rounded-[var(--radius-card)]"
+        data-frost={frost ? "on" : "off"}
       >
+        {frost && (
+          <div ref={frostRef} className="dock-frost" style={{ backgroundImage: `url(${frost})` }} aria-hidden />
+        )}
+        {frost && <div className="dock-tint" aria-hidden />}
+        {p.noise > 0 && <div className="dock-grain" aria-hidden />}
         <AnimatePresence initial={false}>
           {open && (
             <Reveal key="panel-reveal" instant={reduced}>
@@ -541,6 +580,7 @@ export default function Dock(p: Props) {
                       section={p.settingsSection}
                       onSectionChange={p.onSettingsSectionChange}
                       onSave={p.onSaveSettings}
+                      onOpenConfig={p.onOpenConfig}
                       modelQuery={p.modelQuery}
                     />
                   ) : (
