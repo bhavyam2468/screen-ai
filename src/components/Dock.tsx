@@ -21,6 +21,7 @@ import {
   searchLocalFiles,
   setInteractiveRegions,
 } from "../lib/store";
+import { scaleSpring, useMotionScale, useSeconds } from "../lib/motion";
 
 export type Panel = "none" | "chat" | "settings";
 
@@ -76,6 +77,7 @@ interface Props {
 
 /** Measures once per content change and lets the card use one coordinated height transition. */
 function Reveal({ children, instant }: { children: React.ReactNode; instant: boolean }) {
+  const seconds = useSeconds();
   const inner = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(0);
 
@@ -97,7 +99,7 @@ function Reveal({ children, instant }: { children: React.ReactNode; instant: boo
       transition={
         instant
           ? { duration: 0 }
-          : { height: { duration: 0.3, ease: EASE }, opacity: { duration: 0.17, ease: "easeOut" } }
+          : { height: { duration: seconds(0.3), ease: EASE }, opacity: { duration: seconds(0.17), ease: "easeOut" } }
       }
       className="overflow-hidden"
     >
@@ -185,6 +187,10 @@ export default function Dock(p: Props) {
   const [previewPos, setPreviewPos] = useState<{ left: number; top?: number; bottom?: number }>({ left: 12, top: 12 });
   const opacity = (p.settings.bg_opacity ?? 100) / 100;
   const reduced = useReducedMotion() ?? false;
+  // theme.conf `[motion] speed`, published by App through MotionScaleProvider.
+  const seconds = useSeconds();
+  const motionScale = useMotionScale();
+  const layoutSpring = useMemo(() => scaleSpring(LAYOUT_SPRING, motionScale), [motionScale]);
 
   const fileTrigger = useMemo(() => findFileTrigger(value, caret), [value, caret]);
   const fileQuery = fileTrigger?.query ?? null;
@@ -302,10 +308,16 @@ export default function Dock(p: Props) {
     };
   }, [p.snipping, p.sessionRevision]);
 
-  // Track window focus state for styling the dock border when active
+  // The overlay only owns the keyboard part of the time: it grabs it when
+  // summoned and gives it back when another window is focused (see desktop.rs).
+  // Both transitions arrive as window focus/blur, so this is the honest signal
+  // for the card border — and for putting the caret back after a click.
   const [windowFocused, setWindowFocused] = useState(true);
   useEffect(() => {
-    const handleFocus = () => setWindowFocused(true);
+    const handleFocus = () => {
+      setWindowFocused(true);
+      if (!cardRef.current?.contains(document.activeElement)) inputRef.current?.focus();
+    };
     const handleBlur = () => setWindowFocused(false);
     window.addEventListener("focus", handleFocus);
     window.addEventListener("blur", handleBlur);
@@ -315,19 +327,17 @@ export default function Dock(p: Props) {
     };
   }, []);
 
-  // The overlay is summoned focused; ensure focus whenever summoned or when a panel closes.
+  // Summoned focused, so focus the input once the webview has painted it. One
+  // retry covers a compositor that grants the keyboard a frame later.
   useEffect(() => {
-    if (p.panel !== "settings" && !p.snipping) {
-      inputRef.current?.focus();
-      const raf = requestAnimationFrame(() => inputRef.current?.focus());
-      const t1 = setTimeout(() => inputRef.current?.focus(), 40);
-      const t2 = setTimeout(() => inputRef.current?.focus(), 120);
-      return () => {
-        cancelAnimationFrame(raf);
-        clearTimeout(t1);
-        clearTimeout(t2);
-      };
-    }
+    if (p.panel === "settings" || p.snipping) return;
+    inputRef.current?.focus();
+    const frame = requestAnimationFrame(() => inputRef.current?.focus());
+    const retry = setTimeout(() => inputRef.current?.focus(), 120);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(retry);
+    };
   }, [p.sessionRevision, p.panel, p.snipping]);
 
   useEffect(() => {
@@ -489,8 +499,8 @@ export default function Dock(p: Props) {
         layout
         initial={reduced ? false : { opacity: 0, y: 8 }}
         animate={{ opacity: p.snipping ? 0 : 1, y: 0 }}
-        exit={{ opacity: 0, y: 4, transition: { duration: reduced ? 0 : 0.13, ease: EASE } }}
-        transition={reduced ? { duration: 0 } : { ...LAYOUT_SPRING, opacity: { duration: 0.16, ease: "easeOut" } }}
+        exit={{ opacity: 0, y: 4, transition: { duration: reduced ? 0 : seconds(0.13), ease: EASE } }}
+        transition={reduced ? { duration: 0 } : { ...layoutSpring, opacity: { duration: seconds(0.16), ease: "easeOut" } }}
         onLayoutAnimationComplete={() => {
           const rect = cardRef.current?.getBoundingClientRect();
           if (!rect || p.snipping) return;
@@ -523,7 +533,7 @@ export default function Dock(p: Props) {
                   initial={reduced ? false : { opacity: 0, y: 7 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={reduced ? { opacity: 0 } : { opacity: 0, y: -4 }}
-                  transition={reduced ? { duration: 0 } : { duration: 0.19, ease: EASE }}
+                  transition={reduced ? { duration: 0 } : { duration: seconds(0.19), ease: EASE }}
                 >
                   {p.panel === "settings" ? (
                     <SettingsPanel
@@ -555,7 +565,7 @@ export default function Dock(p: Props) {
               initial={{ height: 0, opacity: 0, y: 4 }}
               animate={{ height: "auto", opacity: 1, y: 0 }}
               exit={{ height: 0, opacity: 0, y: 3 }}
-              transition={reduced ? { duration: 0 } : { height: { duration: 0.26, ease: EASE }, opacity: { duration: 0.16, ease: "easeOut" }, y: { duration: 0.2, ease: EASE } }}
+              transition={reduced ? { duration: 0 } : { height: { duration: seconds(0.26), ease: EASE }, opacity: { duration: seconds(0.16), ease: "easeOut" }, y: { duration: seconds(0.2), ease: EASE } }}
               className="overflow-hidden"
             >
               {showFilePicker ? (
@@ -599,7 +609,7 @@ export default function Dock(p: Props) {
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: "auto" }}
               exit={{ opacity: 0, height: 0 }}
-              transition={reduced ? { duration: 0 } : { duration: 0.18, ease: EASE }}
+              transition={reduced ? { duration: 0 } : { duration: seconds(0.18), ease: EASE }}
               className="overflow-hidden"
             >
               <div className="dock-notice"><Check size={12} /><span>{p.notice}</span></div>
@@ -681,8 +691,8 @@ export default function Dock(p: Props) {
             style={previewPos}
             initial={reduced ? false : { opacity: 0, scale: 0.97, y: 4 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, transition: { duration: 0.1 } }}
-            transition={reduced ? { duration: 0 } : { duration: 0.16, ease: EASE }}
+            exit={{ opacity: 0, transition: { duration: seconds(0.1) } }}
+            transition={reduced ? { duration: 0 } : { duration: seconds(0.16), ease: EASE }}
           >
             <img src={p.preview} alt="Full screenshot preview" draggable={false} />
           </motion.div>
@@ -696,7 +706,7 @@ export default function Dock(p: Props) {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={reduced ? { duration: 0 } : { duration: 0.12, ease: "easeOut" }}
+            transition={reduced ? { duration: 0 } : { duration: seconds(0.12), ease: "easeOut" }}
             className="screen-snipping"
             style={{ cursor: "crosshair" }}
             onPointerDown={(event) => {

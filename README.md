@@ -64,6 +64,12 @@ screen-ai --toggle
 - Continue with follow-up questions in the same thread. Open settings with the gear button or `screen-ai --settings`; `Ctrl+,` toggles the settings panel.
 - Dismiss the overlay with **Esc**.
 
+### Keyboard focus
+
+Summoning the overlay takes the keyboard so you can type immediately. It does **not** keep it: on Niri, Hyprland and Sway the app follows the compositor's focus events and hands the keyboard back the moment another window takes focus, so you can click the window behind the card, run an interactive screenshot tool, or search the Niri overview without the overlay swallowing your keys. Clicking the card takes the keyboard back. The card border shows the current state — accent color while the overlay holds the keyboard, muted otherwise.
+
+Compositors that publish no focus events keep the grab while the overlay is open (dismiss it with **Esc** to type elsewhere). Set `SCREEN_AI_KEYBOARD=on-demand` to never grab at all: the overlay then receives keys only after the card is clicked, everywhere.
+
 Settings can follow the desktop theme or use a detected **Qt / Matugen** palette. Screen AI reads KDE colors from `~/.config/kdeglobals` and active `qt5ct` / `qt6ct` color-scheme files, then maps window, surface, text, button, selection/accent, and link colors into the overlay. If Matugen writes to one of those active Qt/KDE theme files, its colors are picked up at launch or the next time the overlay is summoned. Matugen templates can write anywhere, so other custom output paths are not guessed. Screen AI is a Tauri WebView rather than a Qt widget app: Qt widget styles, control geometry, and Qt fonts cannot be imported directly; its layout, motion, and Geist typography stay Screen AI's own.
 
 Providers include Gemini, OpenAI, Anthropic, OpenRouter, Groq, Ollama, and custom OpenAI-compatible endpoints. Add your own provider key; no hosted Screen AI key is required. The interface uses self-hosted Geist and Geist Mono variable fonts (Fontsource), so it does not fetch typography from a third-party CDN; see [`licenses/GEIST-OFL-1.1.txt`](licenses/GEIST-OFL-1.1.txt).
@@ -82,9 +88,11 @@ screen-ai-update
 screen-ai-update --check
 ```
 
-The Settings **Pull & build update** button is just a wrapper around setup. Checks use `git fetch origin main`, comparing the fetched commit with the running binary's embedded revision. Updates use `git pull --ff-only`, install JavaScript dependencies, build locally, and atomically replace the executable. The existing checkout and Cargo build cache are reused instead of downloading a fresh source tree each time. Remote installs retain their checkout in `${XDG_DATA_HOME:-~/.local/share}/screen-ai/source`; clone-based installs reuse that clone and its tracking branch. Keep that clone available for subsequent updates.
+The **Settings → Updates** button is just a wrapper around setup. Checks use `git fetch origin main`, comparing the fetched commit with the running binary's embedded revision; results are cached for 30 s so the launch check and the settings panel do not race the installer's lock. Updates install JavaScript dependencies, build locally, and atomically replace the executable. The existing checkout and Cargo build cache are reused instead of downloading a fresh source tree each time. Remote installs retain their checkout in `${XDG_DATA_HOME:-~/.local/share}/screen-ai/source`; clone-based installs reuse that clone and its tracking branch. Keep that clone available for subsequent updates.
 
-Existing provider settings are kept. The app button skips provider/compositor setup and launching so the running app remains open; restart it after success. Only one setup/check runs at a time, and local changes or divergent history cause setup to stop rather than overwrite work.
+Because a GUI launch inherits a minimal `PATH`, the installer probes the usual toolchain locations (`~/.cargo/bin`, nvm/fnm/volta/asdf node installs, `~/.local/bin`, …) before building — otherwise an in-app update cannot find `cargo` or `npm`.
+
+Existing provider settings are kept. The app button skips provider/compositor setup and launching; when the build succeeds the app restarts itself into the new binary (the Settings panel also keeps a manual restart button). Only one setup/check runs at a time. The app-managed checkout is forced to exactly the revision being installed, so a half-applied update cannot wedge it; a **development clone is never overwritten** — local edits to tracked files or divergent history stop setup instead.
 
 To try a review before it merges, use **Build a pull request** with a managed-checkout install. This invokes the same setup script with the PR's commit, not a second updater. Only build PRs you trust: building source executes its scripts. The next normal update returns the managed checkout to `main`. No prebuilt executable is downloaded.
 

@@ -31,8 +31,9 @@ class SetupTests(unittest.TestCase):
         self.git(repo, 'add', 'file')
         self.git(repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', text)
 
-    def run_setup(self, check=False):
-        env = dict(os.environ, SOURCE_DIR=str(self.repo), SHARE_DIR=str(self.root / 'share'),
+    def run_setup(self, check=False, source_dir=None, share_dir=None):
+        env = dict(os.environ, SOURCE_DIR=str(source_dir or self.repo),
+                   SHARE_DIR=str(share_dir or (self.root / 'share')),
                    SOURCE_REF='main', CHECK_ONLY=str(int(check)), SCREEN_AI_SOURCE_READY='0', REPO='unused')
         return subprocess.run(['bash', '-c', 'set -eu\nORIGINAL_ARGS=()\n' + FUNCTION + '\nprepare_source'], env=env, text=True, capture_output=True)
 
@@ -70,6 +71,28 @@ class SetupTests(unittest.TestCase):
         result = self.run_setup()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Detached development checkout', result.stderr)
+
+    def test_untracked_scratch_file_does_not_block_update(self):
+        (self.repo / 'notes.txt').write_text('scratch')
+        self.commit(self.remote, 'new version')
+        result = self.run_setup()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.repo / 'notes.txt').read_text(), 'scratch')
+
+    def test_managed_checkout_recovers_from_a_half_applied_update(self):
+        # The in-app updater builds from $SHARE_DIR/source, which the app owns:
+        # a dirty or detached managed checkout must still reach main, otherwise
+        # "Update" inside the app silently stops working.
+        share = self.root / 'share'
+        managed = share / 'source'
+        subprocess.run(['git', 'clone', str(self.remote), str(managed)], check=True, capture_output=True)
+        (managed / 'file').write_text('half-applied update')
+        self.git(managed, 'checkout', '--detach')
+        self.commit(self.remote, 'new version')
+        result = self.run_setup(source_dir=managed, share_dir=share)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git(managed, 'rev-parse', 'HEAD'), self.git(self.remote, 'rev-parse', 'HEAD'))
+        self.assertEqual((managed / 'file').read_text(), 'new version')
 
 
 if __name__ == '__main__':

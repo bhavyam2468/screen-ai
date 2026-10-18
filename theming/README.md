@@ -32,7 +32,24 @@ To point at another palette file, set `source_file` in `[palette]`.
 
 ## Other keys
 
-- `[shape] radius`: card corner radius in px (0 to 40).
-- `[type] font`, `mono`, `size`: UI font, monospace font, and base size.
-- `[motion] mode = reduced` turns off non-essential animation. `speed` scales
-  durations (0.5 is faster, 2 is slower).
+`[shape]` — every value is optional; anything unset is borrowed from the
+compositor (Niri's `config.kdl`, including its `include`d files) and then falls
+back to a built-in default:
+
+- `radius`: card corner radius in px (0 to 48). Niri: `geometry-corner-radius`.
+- `inner_radius`: panels, message bubbles and the shot preview (default `radius - 4`).
+- `control_radius`: buttons, inputs and pills (default `radius - 8`).
+- `border_width`: card outline in px (0 to 16). Borrowed from Niri's `focus-ring`
+  or `border` width, capped at 2px — a width sized for a whole window is too
+  heavy on a card.
+- `active_border` / `inactive_border`: card outline while the overlay holds the
+  keyboard, and once it has handed it back. Borrowed from Niri's `focus-ring`
+  `active-color` / `inactive-color`, then the accent color.
+- `gap`: screen-edge margin in px (0 to 120). Niri: `layout { gaps }`.
+- `shadow`: any CSS `box-shadow`. Niri's `layout { shadow }` is translated,
+  keeping its alpha (`#rrggbbaa`).
+
+`[type]` — `font`, `mono`, `size` (8 to 32): UI font, monospace font, base size.
+
+`[motion]` — `mode = reduced` turns off non-essential animation; `speed` scales
+every duration (0.5 is twice as fast, 2.0 twice as slow, 0.1 to 4).

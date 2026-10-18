@@ -230,14 +230,10 @@ export async function askAi(prompt: string, history: Turn[]): Promise<void> {
   await invoke("ask_ai", { prompt, history });
 }
 
+/** Tells the backend the dismiss animation finished, so it can drop the keyboard and the input region. */
 export async function overlayHidden(): Promise<void> {
   if (!inTauri) return;
   await invoke("overlay_hidden");
-}
-
-export async function hideOverlay(): Promise<void> {
-  if (!inTauri) return;
-  await invoke("hide_overlay");
 }
 
 export async function quitApp(): Promise<void> {
@@ -341,20 +337,6 @@ export async function updateFromPr(prNumber: number): Promise<string> {
 export interface UpdateEvent {
   ok: boolean;
   message: string;
-}
-
-export interface UpdateStatusSnapshot {
-  running: boolean;
-  last_line: string;
-}
-
-export async function getUpdateStatus(): Promise<UpdateStatusSnapshot> {
-  if (!inTauri) return { running: false, last_line: "" };
-  try {
-    return await invoke<UpdateStatusSnapshot>("get_update_status");
-  } catch {
-    return { running: false, last_line: "" };
-  }
 }
 
 export async function openThemeConfig(): Promise<void> {

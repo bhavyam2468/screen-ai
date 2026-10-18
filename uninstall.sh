@@ -307,6 +307,33 @@ if command -v xfconf-query >/dev/null 2>&1; then
   fi
 fi
 
+step "Removing theming hooks"
+# install.sh registers a Matugen template that writes $CFG_DIR/colors.conf. Left
+# behind, Matugen would keep writing into a directory this uninstaller removes.
+matugen_config="$CFGXDG/matugen/config.toml"
+if [ -f "$matugen_config" ] && grep -q '^\[templates\.screen-ai\]' "$matugen_config"; then
+  if safe_to_edit "$matugen_config"; then
+    # Guarded: an empty $temp would truncate the user's Matugen config.
+    if temp="$(mktemp "$(dirname "$matugen_config")/.screen-ai-uninstall.XXXXXX")" && [ -n "$temp" ]; then
+      # Drop the table header and its keys, up to the next table or end of file.
+      awk '/^\[templates\.screen-ai\][[:space:]]*$/ { skip = 1; next }
+           skip && /^\[/ { skip = 0 }
+           !skip { print }' "$matugen_config" >"$temp"
+      cat "$temp" >"$matugen_config"
+      rm -f "$temp"
+      ok "removed the Screen AI template from $matugen_config"
+    else
+      warn "could not create a temporary file next to $matugen_config; template left in place"
+    fi
+  else
+    warn "left symlinked/read-only Matugen config untouched: $matugen_config"
+  fi
+fi
+rm -f "$CFGXDG/matugen/templates/screen-ai-colors.conf"
+rm -f "$CFGXDG/dms-shell/matugen/configs/screen-ai.toml"
+rm -f "$CFGXDG/dms-shell/matugen/templates/screen-ai-colors.conf"
+note "Matugen itself is untouched; only Screen AI's template was removed"
+
 step "Removing installed files"
 updater="$(receipt_get UPDATER_WRAPPER)"
 [ -n "$updater" ] || updater="$BIN_DIR/screen-ai-update"

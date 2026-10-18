@@ -355,8 +355,9 @@ fn read_rice_config() -> RiceConfig {
             .map(|value| unquote(value).to_string())
             .filter(|value| !value.is_empty())
     };
+    // theme.conf faces CSS, so an 8-digit value is #rrggbbaa (not Qt's #aarrggbb).
     let color = |section: &str, key: &str| {
-        ini_value(&ini, section, key).and_then(color_to_hex)
+        ini_value(&ini, section, key).and_then(css_color)
     };
 
     let source = text("palette", "source")
@@ -861,6 +862,59 @@ pub fn read_niri_config() -> NiriConfig {
     niri
 }
 
+/// Value of one KDL property on a line: `name=value`, `name value`, or one of
+/// several pairs on a single line such as `offset x=0 y=5`.
+fn kdl_property<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    if name.is_empty() {
+        return None;
+    }
+    let mut rest = line;
+    while let Some(position) = rest.find(name) {
+        let at_token_start = position == 0 || rest.as_bytes()[position - 1].is_ascii_whitespace();
+        let after = &rest[position + name.len()..];
+        // A property name ends at `=` or whitespace, so this does not match a
+        // longer name that merely contains the one we asked for.
+        let is_property =
+            after.is_empty() || after.starts_with('=') || after.starts_with(char::is_whitespace);
+        if at_token_start && is_property {
+            let value = after.trim_start().trim_start_matches('=').trim();
+            let value = value.split_whitespace().next().unwrap_or("");
+            let value = value.trim_matches(|character| character == ',' || character == ';');
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+        rest = &rest[position + name.len()..];
+    }
+    None
+}
+
+fn kdl_number(line: &str, name: &str) -> Option<i32> {
+    kdl_property(line, name).and_then(|value| value.parse::<i32>().ok())
+}
+
+/// Niri and CSS both write `#rrggbbaa`. Keeping the alpha as `rgba()` stops a
+/// borrowed shadow color from turning fully opaque — and stops its bytes being
+/// read as Qt's `#aarrggbb`, which is what `color_to_hex` assumes.
+fn rgba_color(value: &str) -> Option<String> {
+    let value = unquote(value);
+    let Some(hex) = value.strip_prefix('#') else {
+        return css_color(value);
+    };
+    if hex.len() != 8 || !hex.chars().all(|character| character.is_ascii_hexdigit()) {
+        return css_color(value);
+    }
+    let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&hex[range], 16).ok();
+    let alpha = channel(6..8)? as f32 / 255.0;
+    Some(format!(
+        "rgba({}, {}, {}, {:.3})",
+        channel(0..2)?,
+        channel(2..4)?,
+        channel(4..6)?,
+        alpha
+    ))
+}
+
 fn parse_niri_kdl_recursive(
     path: &Path,
     niri: &mut NiriConfig,
@@ -887,11 +941,11 @@ fn parse_niri_kdl_recursive(
     let mut current_block = String::new();
     let mut block_depth = 0;
 
-    let mut shadow_softness = None;
-    let mut shadow_spread = None;
-    let mut shadow_offset_x = 0;
-    let mut shadow_offset_y = 5;
-    let mut shadow_color = None;
+    let mut shadow_softness: Option<i32> = None;
+    let mut shadow_spread: Option<i32> = None;
+    let mut shadow_offset_x: i32 = 0;
+    let mut shadow_offset_y: i32 = 5;
+    let mut shadow_color: Option<String> = None;
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -968,7 +1022,7 @@ fn parse_niri_kdl_recursive(
             }
         } else if trimmed.starts_with("active-color") {
             if let Some(val) = trimmed.strip_prefix("active-color").map(str::trim) {
-                if let Some(hex) = color_to_hex(val) {
+                if let Some(hex) = css_color(val) {
                     if niri.active_color.is_none() || current_block == "focus-ring" {
                         niri.active_color = Some(hex);
                     }
@@ -976,7 +1030,7 @@ fn parse_niri_kdl_recursive(
             }
         } else if trimmed.starts_with("inactive-color") {
             if let Some(val) = trimmed.strip_prefix("inactive-color").map(str::trim) {
-                if let Some(hex) = color_to_hex(val) {
+                if let Some(hex) = css_color(val) {
                     if niri.inactive_color.is_none() || current_block == "focus-ring" {
                         niri.inactive_color = Some(hex);
                     }
@@ -984,68 +1038,29 @@ fn parse_niri_kdl_recursive(
             }
         } else if trimmed.starts_with("urgent-color") {
             if let Some(val) = trimmed.strip_prefix("urgent-color").map(str::trim) {
-                if let Some(hex) = color_to_hex(val) {
+                if let Some(hex) = css_color(val) {
                     niri.urgent_color = Some(hex);
                 }
             }
         } else if current_block == "shadow" {
-            for token in trimmed.split_whitespace() {
-                if let Some(val) = token.strip_prefix("softness") {
-                    let val = val.trim_start_matches('=').trim();
-                    if let Ok(num) = val.parse::<u32>() {
-                        shadow_softness = Some(num);
-                    }
-                } else if let Some(val) = token.strip_prefix("spread") {
-                    let val = val.trim_start_matches('=').trim();
-                    if let Ok(num) = val.parse::<u32>() {
-                        shadow_spread = Some(num);
-                    }
-                } else if token.starts_with("color") {
-                    if let Some(pos) = trimmed.find("color") {
-                        let rest = trimmed[pos + 5..].trim().trim_start_matches('=').trim();
-                        if let Some(col) = color_to_hex(rest) {
-                            shadow_color = Some(col);
-                        }
-                    }
-                }
+            // niri writes `softness=10 spread=4 offset x=0 y=5 color="#00000064"`,
+            // one property per line or several on the `offset` line.
+            if let Some(num) = kdl_number(trimmed, "softness") {
+                shadow_softness = Some(num);
             }
-            if trimmed.contains("softness") {
-                if let Some(pos) = trimmed.find("softness") {
-                    let rest = trimmed[pos + 8..].trim().trim_start_matches('=').trim();
-                    if let Some(first) = rest.split_whitespace().next() {
-                        if let Ok(num) = first.parse::<u32>() {
-                            shadow_softness = Some(num);
-                        }
-                    }
-                }
-            }
-            if trimmed.contains("spread") {
-                if let Some(pos) = trimmed.find("spread") {
-                    let rest = trimmed[pos + 6..].trim().trim_start_matches('=').trim();
-                    if let Some(first) = rest.split_whitespace().next() {
-                        if let Ok(num) = first.parse::<u32>() {
-                            shadow_spread = Some(num);
-                        }
-                    }
-                }
+            if let Some(num) = kdl_number(trimmed, "spread") {
+                shadow_spread = Some(num);
             }
             if trimmed.contains("offset") {
-                if let Some(x_pos) = trimmed.find("x=") {
-                    let rest = &trimmed[x_pos + 2..];
-                    if let Some(val) = rest.split_whitespace().next() {
-                        if let Ok(num) = val.parse::<i32>() {
-                            shadow_offset_x = num;
-                        }
-                    }
+                if let Some(num) = kdl_number(trimmed, "x") {
+                    shadow_offset_x = num;
                 }
-                if let Some(y_pos) = trimmed.find("y=") {
-                    let rest = &trimmed[y_pos + 2..];
-                    if let Some(val) = rest.split_whitespace().next() {
-                        if let Ok(num) = val.parse::<i32>() {
-                            shadow_offset_y = num;
-                        }
-                    }
+                if let Some(num) = kdl_number(trimmed, "y") {
+                    shadow_offset_y = num;
                 }
+            }
+            if let Some(color) = kdl_property(trimmed, "color").and_then(rgba_color) {
+                shadow_color = Some(color);
             }
         }
     }
@@ -1091,14 +1106,6 @@ pub fn get_system_theme() -> SystemTheme {
             layers.push(("gtk", palette));
         }
     }
-    if (wants("niri") || wants("auto")) && niri.active_color.is_some() {
-        let mut niri_palette = QtPalette::default();
-        niri_palette.highlight = niri.active_color.clone();
-        if let Some(ref inact) = niri.inactive_color {
-            niri_palette.alternate_base = Some(inact.clone());
-        }
-        layers.push(("niri", niri_palette));
-    }
 
     let mut merged = QtPalette::default();
     let mut source = "builtin".to_string();
@@ -1126,10 +1133,15 @@ pub fn get_system_theme() -> SystemTheme {
     let gnome_accent = gsetting("org.gnome.desktop.interface", "accent-color")
         .and_then(|value| parse_gnome_accent(&value));
     let kde_accent = kde_palette.as_ref().and_then(|p| p.highlight.clone());
+    // A compositor's own accent (niri's focus-ring active color) is the right
+    // default on a tiling setup that exposes no palette of its own. It stays out
+    // of the palette layers: a focus color is an accent, not a set of surface
+    // roles, and mapping it onto them tinted unrelated surfaces.
     let accent = palette
         .as_ref()
         .and_then(|p| p.highlight.clone())
         .or(kde_accent)
+        .or_else(|| niri.active_color.clone())
         .or(gnome_accent);
 
     let dark = if is_kde {
@@ -1153,7 +1165,11 @@ pub fn get_system_theme() -> SystemTheme {
     let radius = rice.radius.or(niri.corner_radius);
     let inner_radius = rice.inner_radius.or_else(|| radius.map(|r| r.saturating_sub(4).max(4)));
     let control_radius = rice.control_radius.or_else(|| radius.map(|r| r.saturating_sub(8).max(4)));
-    let border_width = rice.border_width.or(niri.focus_ring_width).or(niri.border_width);
+    // A compositor's window focus ring is sized for a full window — niri defaults
+    // to 4px — which reads as a heavy outline on a small card. Borrow it capped,
+    // and let an explicit `border_width` in theme.conf win uncapped.
+    let borrowed_width = niri.focus_ring_width.or(niri.border_width).map(|width| width.clamp(1, 2));
+    let border_width = rice.border_width.or(borrowed_width);
     let active_border = rice.active_border.or(niri.active_color).or_else(|| palette.as_ref().and_then(|p| p.highlight.clone())).or(accent.clone());
     let inactive_border = rice.inactive_border.or(niri.inactive_color);
     let urgent_color = niri.urgent_color;
@@ -1356,13 +1372,37 @@ mod tests {
 
     #[test]
     fn live_system_theme_resolves_without_panics() {
+        // This reads whatever desktop the test happens to run on, so it only
+        // asserts the invariants that hold everywhere: a known source, a theme
+        // file path, and a usable motion multiplier.
         let theme = get_system_theme();
         eprintln!(
             "Effective theme source: {:?}, window: {:?}",
             theme.source,
             theme.palette.as_ref().and_then(|p| p.window.as_deref())
         );
-        let pal = theme.palette.expect("expected palette to be present");
-        assert!(pal.window.is_some() || pal.base.is_some());
+        assert!(["explicit", "matugen", "qt", "gtk", "builtin"].contains(&theme.source.as_str()));
+        assert!(theme.tokens.config_path.ends_with("theme.conf"));
+        assert!(theme.tokens.speed > 0.0);
+    }
+
+    #[test]
+    fn reads_kdl_properties_from_shared_and_split_lines() {
+        assert_eq!(kdl_property("softness=10", "softness"), Some("10"));
+        assert_eq!(kdl_property("softness 10", "softness"), Some("10"));
+        assert_eq!(kdl_property("offset x=0 y=5", "x"), Some("0"));
+        assert_eq!(kdl_property("offset x=0 y=5", "y"), Some("5"));
+        assert_eq!(kdl_number("spread=4", "spread"), Some(4));
+        assert_eq!(kdl_number("spread=4", "softness"), None);
+        // `x-spread` contains `spread` but is not the `spread` property.
+        assert_eq!(kdl_number("x-spread=4", "spread"), None);
+    }
+
+    #[test]
+    fn css_alpha_colors_keep_their_alpha() {
+        // niri's default shadow color, read as CSS #rrggbbaa — not Qt #aarrggbb.
+        assert_eq!(rgba_color("\"#00000064\""), Some("rgba(0, 0, 0, 0.392)".into()));
+        assert_eq!(rgba_color("#ff0000"), Some("#ff0000".into()));
+        assert_eq!(rgba_color("rgb(1, 2, 3)"), Some("#010203".into()));
     }
 }
